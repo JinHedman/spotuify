@@ -1,0 +1,10 @@
+# Spotify green — the built-in default.
+theme:
+  active:       "#1db954"
+  inactive:     DarkGray
+  selected_bg:  DarkGray
+  text:         Reset
+  hint:         DarkGray
+  error:        Red
+  progress:     "#1db954"
+  playing_icon: "#1db954"

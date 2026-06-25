@@ -1,0 +1,139 @@
+mod app;
+mod auth;
+mod client;
+mod config;
+mod handlers;
+mod ui;
+
+use anyhow::Result;
+use app::AppState;
+use clap::Parser;
+use client::{IoEvent, Network};
+use config::client::ClientConfig;
+use config::user::UserConfig;
+use config::{
+  client_config_path, presets, selected_theme_path, token_cache_path, user_config_path,
+};
+use crossterm::event::{Event, EventStream, KeyEventKind};
+use futures::StreamExt;
+use handlers::KeyOutcome;
+use ratatui::DefaultTerminal;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::time;
+
+const BANNER: &str = r"
+   ____             _
+  / ___| _ __   ___ | |_
+  \___ \| '_ \ / _ \| __|
+   ___) | |_) | (_) | |_
+  |____/| .__/ \___/ \__|
+        |_|
+
+  Terminal client for Spotify
+";
+
+#[derive(Parser, Debug)]
+#[command(
+  name = "spot",
+  version,
+  about = "A terminal client for Spotify",
+  before_help = BANNER
+)]
+struct Cli {}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+  let _cli = Cli::parse();
+
+  install_panic_hook();
+
+  let client_path = client_config_path()?;
+  let cache_path = token_cache_path()?;
+  let user_cfg_path = user_config_path()?;
+  let client_cfg = ClientConfig::load_or_bootstrap(&client_path)?;
+  let user_cfg = Arc::new(UserConfig::load_or_default(&user_cfg_path)?);
+
+  let spotify = auth::build_client(&client_cfg, cache_path);
+  auth::authenticate(&spotify).await?;
+
+  let state = Arc::new(Mutex::new(AppState::new(Arc::clone(&user_cfg))));
+
+  // If the user picked a preset in a previous session, apply it now — overrides
+  // the theme that came in from config.yml. A malformed or stale file is
+  // silently ignored; the built-in default stays in place.
+  if let Ok(path) = selected_theme_path() {
+    if let Ok(raw) = std::fs::read_to_string(&path) {
+      if let Some(preset) = presets::find_by_name(raw.trim()) {
+        state.lock().unwrap().theme = preset.theme();
+      }
+    }
+  }
+
+  let (io_tx, io_rx) = mpsc::channel::<IoEvent>(64);
+
+  let network = Network::new(spotify, Arc::clone(&state));
+  let network_handle = tokio::spawn(network.run(io_rx));
+
+  let terminal = ratatui::init();
+  let result = run(
+    terminal,
+    Arc::clone(&state),
+    io_tx.clone(),
+    Arc::clone(&user_cfg),
+  )
+  .await;
+  ratatui::restore();
+
+  let _ = io_tx.send(IoEvent::Shutdown).await;
+  let _ = network_handle.await;
+
+  result
+}
+
+async fn run(
+  mut terminal: DefaultTerminal,
+  state: Arc<Mutex<AppState>>,
+  io_tx: mpsc::Sender<IoEvent>,
+  user_cfg: Arc<UserConfig>,
+) -> Result<()> {
+  let _ = io_tx.send(IoEvent::GetCurrentPlayback).await;
+  let _ = io_tx.send(IoEvent::GetPlaylists).await;
+
+  let mut events = EventStream::new();
+  let mut poll = time::interval(Duration::from_millis(user_cfg.behavior.poll_interval_ms));
+  poll.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+  let mut redraw = time::interval(Duration::from_millis(user_cfg.behavior.tick_rate_ms));
+  redraw.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+  loop {
+    terminal.draw(|f| ui::draw(f, &state))?;
+
+    tokio::select! {
+      _ = redraw.tick() => {}
+      _ = poll.tick() => {
+        let _ = io_tx.send(IoEvent::GetCurrentPlayback).await;
+      }
+      maybe_evt = events.next() => {
+        let Some(evt) = maybe_evt else { return Ok(()) };
+        if let Event::Key(key) = evt? {
+          if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            continue;
+          }
+          if matches!(handlers::handle_key(key, &state, &io_tx).await, KeyOutcome::Quit) {
+            return Ok(());
+          }
+        }
+      }
+    }
+  }
+}
+
+fn install_panic_hook() {
+  let default_hook = std::panic::take_hook();
+  std::panic::set_hook(Box::new(move |info| {
+    ratatui::restore();
+    default_hook(info);
+  }));
+}

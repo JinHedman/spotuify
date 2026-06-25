@@ -1,0 +1,243 @@
+# spotuify
+
+A modern Rust terminal client for Spotify. Inspired by [`spotify-tui`](https://github.com/Rigellute/spotify-tui), rebuilt on current crates:
+
+- `ratatui` 0.30 (replaces the unmaintained `tui-rs`)
+- `crossterm` 0.29 (event-stream backend)
+- `rspotify` 0.16
+- `tokio` 1 (single runtime, three tasks)
+- `clap` 4
+- Rust edition 2021
+
+**Binary:** `spot`. Config directory: `$CONFIG_DIR/spotuify/`.
+
+Like `spotify-tui`, this only *controls* playback via the Spotify Web API. Audio playback itself comes from the official Spotify desktop app, `spotifyd`, or any other Spotify Connect-enabled client running on the same account.
+
+## Requirements
+
+- **Spotify Premium** — Connect playback control is Premium-only.
+- **An active Spotify Connect device** on your account (desktop app, phone, `spotifyd`, etc.). `spot` hands off to an existing device; it doesn't produce audio.
+- **Your own Spotify developer app** — every user needs their own Client ID / Secret. Spotify does not allow sharing credentials. The first-run wizard walks you through this.
+
+## Install / build
+
+```bash
+cd spotuify
+cargo build --release
+./target/release/spot
+```
+
+On Linux, clipboard support needs `libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev` and the usual `libssl-dev pkg-config`.
+
+## First run
+
+If `$CONFIG_DIR/spotuify/client.yml` is missing, `spot` walks you through setup:
+
+1. Opens <https://developer.spotify.com/dashboard> in your browser.
+2. Asks you to:
+   - Click **Create app**
+   - Fill in any name + description
+   - Set the redirect URI to **`http://127.0.0.1:8888/callback`** (exactly)
+   - Tick **Web API**
+   - Save, then copy the Client ID and Client Secret
+3. Prompts for Client ID, Client Secret, and (optional) redirect port.
+4. Opens the Spotify auth URL; you approve; browser is redirected to `http://127.0.0.1:8888/callback?code=...`.
+5. You copy that full URL from the browser address bar and paste it back into the terminal.
+6. The TUI launches.
+
+Subsequent runs use the cached token at `$CONFIG_DIR/spotuify/.token_cache.json` and refresh it automatically.
+
+## Keybindings
+
+Press `?` at any time for the in-app help overlay. Defaults:
+
+| Key | Action |
+|-----|--------|
+| `?` | Toggle help overlay |
+| `Esc` / `Ctrl+C` | Quit |
+| `Ctrl+h` / `Ctrl+l` | Focus pane left / right |
+| `Ctrl+j` / `Ctrl+k` | Focus pane up / down (inverted) |
+| `k` / `j` or `↓` / `↑` | Move selection within list (inverted j/k) |
+| `K` / `J` | Move selection by 5 (inverted) |
+| `g` / `G` | Top / bottom of list |
+| `Enter` / `l` | Activate / open selected item |
+| `h` / `q` / `b` / `Backspace` | Back (pop navigation) |
+| `/` | Open search input |
+| `Tab` / `Shift+Tab` | Cycle tabs in current view (e.g. search results) |
+| `←` / `→` | Cycle tabs (alt) |
+| `Space` | Play / pause |
+| `n` / `p` | Next / previous track |
+| `+` / `-` | Volume ±10 |
+| `[` / `]` | Seek ±5 seconds |
+| `r` | Refresh current playback |
+| `s` | Save / unsave current track |
+| `S` | Save / unsave current album |
+| `f` | Follow / unfollow current artist |
+| `d` | Select playback device |
+| `Q` | Show playback queue |
+| `A` | Add selected track / episode to queue |
+| `D` | Remove highlighted playlist from your library (confirm) |
+| `t` | Open theme picker (arrow keys to preview, Enter to apply, Esc to cancel) |
+
+All keys except `Ctrl+C` are remappable via `config.yml` (see below).
+
+## Features
+
+### Works today
+
+- **Authentication** — OAuth auth-code flow with cached token + automatic refresh.
+- **Playbar** — current track/episode, play/pause icon, volume, smooth extrapolated progress bar (moves between polls).
+- **Sidebar** — `Library` (fixed entries) + `Playlists` (your own playlists).
+- **Library entries**
+  - **Liked Songs** → saved tracks in TrackTable
+  - **Albums** → saved-album list → Enter loads album tracks
+  - **Artists** → followed-artist list → Enter loads top tracks *(see caveat below)*
+  - **Podcasts** → saved-show list → Enter loads episodes → Enter plays
+  - **Recently Played** → recently played tracks (deduped)
+- **TrackTable** — columns for #, Title, Artist, Album, Time. `Enter` plays from selected position. Supports playing from playlist/album contexts or standalone URI lists.
+- **Search** — `/` to open. Submits to Spotify search with 4 tabs (Tracks / Albums / Artists / Playlists). Enter on a track plays; Enter on album/artist/playlist opens it in TrackTable.
+- **Queue** — `Q` shows currently playing + upcoming. `A` from TrackTable / ShowEpisodes / search-track-results adds the selected item to the queue.
+- **Device selector** — `d` lists your Spotify Connect devices. `Enter` transfers playback.
+- **Playback control** — play/pause, next/prev, seek, volume.
+- **Save toggle** — `s` toggles save/unsave for the currently-playing track, `S` for the current album, `f` for the current artist.
+- **Remove playlist** — `D` on a highlighted playlist opens a confirmation dialog; confirming unfollows it (which deletes your own playlists).
+- **Block navigation** — every view is a block; `Tab` cycles, Enter pushes onto a history stack, `b`/`Backspace` pops.
+- **Scrolling** — vim-style with a 2-row scrolloff margin: the view starts sliding 2 rows before the selection hits the top or bottom of the visible area, symmetric up and down.
+- **Help overlay, Legend bar, error line** — visible affordances.
+- **Responsive layout** — sidebar auto-collapses below ~110 columns; basic playbar-only view when the terminal is very short; a "terminal too small" placeholder below 60×10.
+- **Configurable theme + keybindings** via `$CONFIG_DIR/spotuify/config.yml` (see "Config" below). A few ready-made palettes live in [`themes/`](./themes/).
+- **Live theme picker** — press `t` to preview built-in presets on the fly (Spotify Green, Gruvbox Dark, Solarized Dark, Nord, Monokai). Enter applies and persists (writes `$CONFIG_DIR/spotuify/.selected_theme`, which is re-applied on next launch). Esc reverts. Delete `.selected_theme` to go back to your `config.yml` theme, or copy the matching `themes/*.yml` into `config.yml` for a config-tracked change.
+
+### Known limitations (not our fault)
+
+Spotify deprecated a large slice of the Web API for new apps on **2024-11-27**. For apps that didn't already have extended-mode access, these endpoints return 403/404:
+
+- `GET /recommendations` — Recommendations
+- `GET /artists/{id}/related-artists` — Related artists
+- `GET /audio-features`, `GET /audio-analysis` — Audio features / analysis
+- `GET /browse/featured-playlists` — Featured playlists
+- Algorithmic playlists (Discover Weekly, Release Radar, Daily Mix) — no longer returned
+- `GET /artists/{id}/top-tracks` — Top tracks (flagged deprecated in rspotify 0.16; the call is kept under `#[allow(deprecated)]`, works only for accounts with legacy extended-mode access)
+
+Spotuify does not implement any of these. They are called out in [`PLAN.md`](./PLAN.md) §3.
+
+Other Spotify-side limitations:
+
+- **Playlist folders** are not exposed by the Web API at all — they are a local-client feature. The playlist list is flat. This is a ~10-year standing request to Spotify.
+- **Local tracks** (imported MP3s) have no URI and can't be played via the Web API.
+
+## Config
+
+Two files live under `$CONFIG_DIR/spotuify/`:
+
+### `client.yml`
+
+Your Spotify app credentials. Created automatically by the first-run wizard:
+
+```yaml
+client_id: "…"
+client_secret: "…"
+redirect_port: 8888
+```
+
+### `config.yml` (optional)
+
+Controls theme, behavior, and keybindings. Missing file = built-in defaults. Every field has a sensible default; you only need to include the fields you want to override.
+
+```yaml
+theme:
+  active:        "#1db954"   # focused block borders, tab highlight, play icon
+  inactive:      DarkGray     # unfocused block borders
+  selected_bg:   DarkGray     # highlighted row background
+  hint:          DarkGray     # dim text (subtitle, legend labels, hints)
+  error:         Red          # error messages in the playbar
+  progress:      "#1db954"    # progress bar fill
+  playing_icon:  "#1db954"    # ▶ / ⏸ icon
+
+behavior:
+  poll_interval_ms: 3000      # how often to re-poll current playback
+  tick_rate_ms: 200           # UI redraw tick (governs progress-bar smoothness)
+  volume_step: 10             # increment for +/-
+  seek_step_ms: 5000          # increment for [/]
+
+keybindings:
+  # Each action accepts a single key or a list of keys.
+  # Names: Space, Tab, BackTab, Esc, Enter, Backspace, Up, Down, Left, Right,
+  # PageUp, PageDown, Home, End, Delete, or any single printable character.
+  # Modifier prefixes: ctrl+, alt+, shift+.
+  quit:             Esc
+  back:             [b, Backspace, q, h]
+  activate:         [Enter, l]
+  help:             "?"
+  search:           "/"
+  device:           d
+  queue:            Q
+  refresh:          r
+  play_pause:       Space
+  next_track:       n
+  previous_track:   p
+  volume_up:        ["+", "="]
+  volume_down:      ["-", "_"]
+  seek_forward:     "]"
+  seek_backward:    "["
+  save_track:       s
+  save_album:       S
+  follow_artist:    f
+  delete_playlist:  D
+  theme_picker:     t
+  add_to_queue:     A
+  block_left:       ctrl+h
+  block_right:      ctrl+l
+  block_up:         ctrl+j
+  block_down:       ctrl+k
+  move_down:        [k, Down]
+  move_up:          [j, Up]
+  move_down_big:    K
+  move_up_big:      J
+  move_top:         g
+  move_bottom:      G
+  search_tab_next:  [Tab, Right]
+  search_tab_prev:  [BackTab, Left]
+```
+
+Color values accept any of:
+- Named colors: `Black`, `Red`, `Green`, `Yellow`, `Blue`, `Magenta`, `Cyan`, `White`, `Gray`, `DarkGray`, `LightRed`, `LightGreen`, `LightYellow`, `LightBlue`, `LightMagenta`, `LightCyan`, `Reset` (terminal default)
+- Hex RGB: `"#1db954"`
+
+`Ctrl+C` is hard-wired to quit and cannot be remapped.
+
+## Architecture (short version)
+
+Single Tokio runtime. Three concurrent actors:
+
+1. **UI task** (main) — owns the terminal, runs the draw/event loop, dispatches keys to handlers.
+2. **Network task** — `tokio::spawn`'d; consumes `IoEvent` messages from an `mpsc::channel` and calls `rspotify`. Writes results back into the shared `Arc<Mutex<AppState>>`.
+3. **Event task** — implicit in `crossterm::event::EventStream` consumed by the UI task inside a `tokio::select!`.
+
+The `IoEvent` enum in [`src/client/mod.rs`](./src/client/mod.rs) is the full contract between UI and network — every Spotify call is one variant. Adding a new Spotify interaction means: add an `IoEvent` variant, handle it in `Network::dispatch`, and dispatch it from a handler via `io_tx.send`.
+
+Full design notes are in [`PLAN.md`](./PLAN.md).
+
+## Roadmap
+
+### Intentionally skipped
+
+- **CLI mode** (`spot playback`, `spot play`, `spot list`, `spot search`) — was planned for M7 but dropped.
+- **Tracing file log** — dropped.
+- **README screenshots** — dropped.
+
+### Social actions (still deferred)
+
+- Follow a playlist from a search result (not yet wired — only "remove from library" via `D` on the sidebar is available today).
+
+
+### If Spotify ever re-enables them
+
+- Recommendations view (seed from artist / seed from track)
+- Related-artists panel on artist pages
+- Audio analysis / pitches view (the one we explicitly dropped to avoid visual clutter anyway)
+- Made For You / Discover Weekly / Release Radar
+
+## License
+
+MIT.

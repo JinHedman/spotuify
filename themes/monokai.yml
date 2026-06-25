@@ -1,0 +1,10 @@
+# Monokai — the Sublime Text classic.
+theme:
+  active:       "#a6e22e"
+  inactive:     "#75715e"
+  selected_bg:  "#3e3d32"
+  text:         "#f8f8f2"
+  hint:         "#75715e"
+  error:        "#f92672"
+  progress:     "#66d9ef"
+  playing_icon: "#fd971f"

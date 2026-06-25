@@ -1,0 +1,10 @@
+# Nord — arctic-inspired palette (https://www.nordtheme.com).
+theme:
+  active:       "#88c0d0"
+  inactive:     "#4c566a"
+  selected_bg:  "#3b4252"
+  text:         "#e5e9f0"
+  hint:         "#616e88"
+  error:        "#bf616a"
+  progress:     "#a3be8c"
+  playing_icon: "#ebcb8b"

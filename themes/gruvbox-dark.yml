@@ -1,0 +1,10 @@
+# Gruvbox dark — warm retro palette.
+theme:
+  active:       "#fabd2f"
+  inactive:     "#665c54"
+  selected_bg:  "#3c3836"
+  text:         "#ebdbb2"
+  hint:         "#928374"
+  error:        "#fb4934"
+  progress:     "#b8bb26"
+  playing_icon: "#fabd2f"
