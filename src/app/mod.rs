@@ -25,6 +25,37 @@ pub const LIBRARY_ENTRIES: [&str; 5] = [
   "Recently Played",
 ];
 
+/// Cover art is drawn with the upper-half-block glyph: each terminal cell
+/// carries two independently coloured pixels (foreground = top, background =
+/// bottom), so a cell grid of `COVER_COLS x COVER_ROWS` renders
+/// `COVER_COLS x (COVER_ROWS * 2)` full-colour pixels.
+///
+/// 24x12 cells fits the 36 usable columns of the sidebar and costs 12 rows.
+/// Terminal cells are roughly 2:1, so this is square on screen.
+pub const COVER_COLS: u16 = 24;
+pub const COVER_ROWS: u16 = 12;
+
+/// One rendered cover: `COVER_ROWS * COVER_COLS` cells, row-major, each a
+/// (top, bottom) RGB pair.
+#[derive(Clone, Debug)]
+pub struct CoverArt {
+  pub cols: u16,
+  pub rows: u16,
+  pub cells: Vec<(Rgb, Rgb)>,
+}
+
+pub type Rgb = (u8, u8, u8);
+
+/// What we know about the selected playlist's cover. `art: None` means we
+/// looked and Spotify had no image — distinct from `playlist_cover: None`,
+/// which means we have not looked yet. Keeping them apart stops the network
+/// task from re-spawning ffmpeg for a playlist that will never have art.
+#[derive(Clone, Debug)]
+pub struct PlaylistCover {
+  pub playlist_id: String,
+  pub art: Option<CoverArt>,
+}
+
 #[derive(Clone, Debug)]
 pub struct TrackRow {
   pub uri: Option<String>,
@@ -127,6 +158,11 @@ pub struct AppState {
   pub playlists: Vec<SimplifiedPlaylist>,
   pub playlists_index: usize,
   pub playlists_offset: usize,
+  /// Rendered cover for the currently selected playlist, if any.
+  pub playlist_cover: Option<PlaylistCover>,
+  /// Set once ffmpeg turns out to be missing or unusable, so we stop trying
+  /// on every selection change.
+  pub cover_render_disabled: bool,
 
   pub track_list: Vec<TrackRow>,
   pub track_list_title: String,
@@ -199,6 +235,8 @@ impl AppState {
       playlists: Vec::new(),
       playlists_index: 0,
       playlists_offset: 0,
+      playlist_cover: None,
+      cover_render_disabled: false,
       track_list: Vec::new(),
       track_list_title: String::new(),
       track_list_context_uri: None,

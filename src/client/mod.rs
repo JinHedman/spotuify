@@ -1,4 +1,4 @@
-use crate::app::{AppState, TrackRow};
+use crate::app::{AppState, CoverArt, PlaylistCover, Rgb, TrackRow, COVER_COLS, COVER_ROWS};
 use anyhow::{Context, Result};
 use rspotify::model::{
   AdditionalType, AlbumId, AlbumType, ArtistId, EpisodeId, LibraryId, Market, Offset,
@@ -16,6 +16,10 @@ use tracing::warn;
 pub enum IoEvent {
   GetCurrentPlayback,
   GetPlaylists,
+  /// Render cover art for whichever playlist is selected *now*. Carries no
+  /// id on purpose: the network task re-reads the selection when it dequeues,
+  /// so a burst of these from held-down j/k collapses to a single render.
+  RefreshPlaylistCover,
   GetPlaylistTracks {
     playlist_id: String,
     playlist_name: String,
@@ -95,6 +99,7 @@ impl Network {
       IoEvent::Shutdown => Ok(()),
       IoEvent::GetCurrentPlayback => self.get_current_playback().await,
       IoEvent::GetPlaylists => self.get_playlists().await,
+      IoEvent::RefreshPlaylistCover => self.refresh_playlist_cover().await,
       IoEvent::GetPlaylistTracks {
         playlist_id,
         playlist_name,
@@ -187,13 +192,98 @@ impl Network {
       }
       offset += PAGE_LIMIT;
     }
-    let mut state = self.state.lock().unwrap();
-    state.playlists = playlists;
-    // Clamp rather than reset — this runs again after an unfollow, and the
-    // user's cursor should stay where it was.
-    state.playlists_index = state
-      .playlists_index
-      .min(state.playlists.len().saturating_sub(1));
+    // Scoped so the guard is structurally dropped before the await below —
+    // an explicit drop() still leaves it in the future's captured state and
+    // makes the whole network task non-Send.
+    {
+      let mut state = self.state.lock().unwrap();
+      state.playlists = playlists;
+      // Clamp rather than reset — this runs again after an unfollow, and the
+      // user's cursor should stay where it was.
+      state.playlists_index = state
+        .playlists_index
+        .min(state.playlists.len().saturating_sub(1));
+      // A new list invalidates whatever cover we were showing.
+      state.playlist_cover = None;
+    }
+    // Render art for the initially selected playlist so the pane is populated
+    // before the user touches the cursor.
+    self.refresh_playlist_cover().await
+  }
+
+  /// Render the selected playlist's cover into half-block cells.
+  ///
+  /// Shells out to ffmpeg, which decodes the JPEG, scales it to the cell grid
+  /// and hands back raw RGB. ffmpeg is built with TLS here, so it fetches the
+  /// CDN URL itself and we need no HTTP client of our own.
+  ///
+  /// Best-effort by design: a missing ffmpeg, a dead URL or a slow CDN must
+  /// never surface as a UI error, because this runs on ordinary cursor
+  /// movement. Failures are logged and leave the pane empty.
+  async fn refresh_playlist_cover(&self) -> Result<()> {
+    // Decide what (if anything) to render while holding the lock, then drop it
+    // before the await — ffmpeg takes tens of milliseconds and the UI thread
+    // redraws off this same mutex.
+    let target = {
+      let s = self.state.lock().unwrap();
+      if s.cover_render_disabled {
+        return Ok(());
+      }
+      let Some(playlist) = s.playlists.get(s.playlists_index) else {
+        return Ok(());
+      };
+      let id = playlist.id.id().to_string();
+      // Already resolved for this playlist — this is what makes a burst of
+      // queued refreshes collapse instead of re-spawning ffmpeg per keypress.
+      if s
+        .playlist_cover
+        .as_ref()
+        .is_some_and(|c| c.playlist_id == id)
+      {
+        return Ok(());
+      }
+      smallest_image_url(&playlist.images).map(|url| (id, url))
+    };
+
+    let Some((playlist_id, url)) = target else {
+      // No image on this playlist. Record that so we don't look again.
+      let mut s = self.state.lock().unwrap();
+      if let Some(playlist) = s.playlists.get(s.playlists_index) {
+        let id = playlist.id.id().to_string();
+        s.playlist_cover = Some(PlaylistCover {
+          playlist_id: id,
+          art: None,
+        });
+      }
+      return Ok(());
+    };
+
+    let art = match render_cover(&url).await {
+      Ok(art) => Some(art),
+      Err(err) => {
+        if is_ffmpeg_missing(&err) {
+          warn!(
+            ?err,
+            "ffmpeg unavailable — disabling cover art for this run"
+          );
+          self.state.lock().unwrap().cover_render_disabled = true;
+          return Ok(());
+        }
+        warn!(?err, url = %url, "cover render failed");
+        None
+      }
+    };
+
+    let mut s = self.state.lock().unwrap();
+    // The selection may have moved while ffmpeg ran. Only publish if the
+    // playlist we rendered is still the one under the cursor.
+    let still_selected = s
+      .playlists
+      .get(s.playlists_index)
+      .is_some_and(|p| p.id.id() == playlist_id);
+    if still_selected {
+      s.playlist_cover = Some(PlaylistCover { playlist_id, art });
+    }
     Ok(())
   }
 
@@ -992,4 +1082,200 @@ fn parse_context_uri(uri: &str) -> Result<PlayContextId<'static>> {
     return Ok(PlayContextId::Artist(id.into_static()));
   }
   anyhow::bail!("unsupported context URI: {uri}")
+}
+
+/// Spotify returns playlist images largest-first. We only ever draw a
+/// `COVER_COLS`-wide thumbnail, so take the smallest available and save the
+/// bandwidth. `width` is nullable, so fall back to document order.
+fn smallest_image_url(images: &[rspotify::model::Image]) -> Option<String> {
+  images
+    .iter()
+    .min_by_key(|i| i.width.unwrap_or(u32::MAX))
+    .or_else(|| images.last())
+    .map(|i| i.url.clone())
+}
+
+fn is_ffmpeg_missing(err: &anyhow::Error) -> bool {
+  err
+    .downcast_ref::<std::io::Error>()
+    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// How long we give ffmpeg to fetch and decode before giving up. Generous for
+/// a CDN round trip, short enough that a hung process can't wedge the network
+/// task (which is serial — a stuck render would stall playback polling).
+const COVER_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn render_cover(url: &str) -> Result<CoverArt> {
+  let cols = COVER_COLS;
+  let rows = COVER_ROWS;
+  let px_w = cols as u32;
+  let px_h = rows as u32 * 2; // two stacked pixels per cell
+
+  let mut cmd = tokio::process::Command::new("ffmpeg");
+  cmd
+    // ffmpeg reads stdin by default. The TUI owns stdin, so without this it
+    // steals the user's keystrokes.
+    .arg("-nostdin")
+    .arg("-loglevel")
+    .arg("error")
+    // The URL is a Spotify API value passed as its own argv entry — never
+    // through a shell — so there is nothing to quote or escape.
+    .arg("-i")
+    .arg(url)
+    .arg("-vframes")
+    .arg("1")
+    .arg("-vf")
+    .arg(format!("scale={px_w}:{px_h}:flags=lanczos"))
+    .arg("-f")
+    .arg("rawvideo")
+    .arg("-pix_fmt")
+    .arg("rgb24")
+    .arg("-")
+    .stdin(std::process::Stdio::null())
+    .kill_on_drop(true);
+
+  let output = tokio::time::timeout(COVER_TIMEOUT, cmd.output())
+    .await
+    .map_err(|_| anyhow::anyhow!("ffmpeg timed out after {COVER_TIMEOUT:?}"))?
+    .map_err(anyhow::Error::from)
+    .context("spawning ffmpeg")?;
+
+  if !output.status.success() {
+    anyhow::bail!(
+      "ffmpeg exited {}: {}",
+      output.status,
+      String::from_utf8_lossy(output.stderr.as_slice()).trim()
+    );
+  }
+
+  let want = (px_w * px_h * 3) as usize;
+  if output.stdout.len() < want {
+    anyhow::bail!(
+      "ffmpeg returned {} bytes, expected {want}",
+      output.stdout.len()
+    );
+  }
+
+  let px = &output.stdout[..want];
+  let at = |x: u32, y: u32| -> Rgb {
+    let i = ((y * px_w + x) * 3) as usize;
+    (px[i], px[i + 1], px[i + 2])
+  };
+
+  let mut cells = Vec::with_capacity((cols as usize) * (rows as usize));
+  for row in 0..rows as u32 {
+    for col in 0..cols as u32 {
+      cells.push((at(col, row * 2), at(col, row * 2 + 1)));
+    }
+  }
+
+  Ok(CoverArt { cols, rows, cells })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::io::Write;
+
+  /// Writes a 48x48 PPM: top half pure red, bottom half pure blue.
+  fn fixture(path: &std::path::Path) {
+    let (w, h) = (48usize, 48usize);
+    let mut buf = format!("P6\n{w} {h}\n255\n").into_bytes();
+    for y in 0..h {
+      let px: [u8; 3] = if y < h / 2 { [255, 0, 0] } else { [0, 0, 255] };
+      for _ in 0..w {
+        buf.extend_from_slice(&px);
+      }
+    }
+    let mut f = std::fs::File::create(path).unwrap();
+    f.write_all(&buf).unwrap();
+  }
+
+  fn have_ffmpeg() -> bool {
+    std::process::Command::new("ffmpeg")
+      .arg("-version")
+      .stdout(std::process::Stdio::null())
+      .stderr(std::process::Stdio::null())
+      .status()
+      .is_ok()
+  }
+
+  /// The half-block encoding is easy to get subtly wrong — rows flipped,
+  /// or fg/bg (top/bottom) swapped. A red-over-blue fixture catches both.
+  #[tokio::test]
+  async fn render_cover_preserves_orientation_and_channels() {
+    if !have_ffmpeg() {
+      eprintln!("skipping: ffmpeg not in PATH");
+      return;
+    }
+    let dir = std::env::temp_dir().join("spotuify-cover-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("fixture.ppm");
+    fixture(&path);
+
+    let art = render_cover(path.to_str().unwrap()).await.unwrap();
+
+    assert_eq!(art.cols, COVER_COLS);
+    assert_eq!(art.rows, COVER_ROWS);
+    assert_eq!(
+      art.cells.len(),
+      COVER_COLS as usize * COVER_ROWS as usize,
+      "one cell per grid position"
+    );
+
+    // First row: both stacked pixels land in the red half.
+    let ((tr, _, tb), (br, _, bb)) = art.cells[0];
+    assert!(tr > 200 && tb < 60, "top of first cell should be red");
+    assert!(br > 200 && bb < 60, "bottom of first cell should be red");
+
+    // Last row: both land in the blue half. If rows were flipped this fails.
+    let last = art.cells.len() - COVER_COLS as usize;
+    let ((tr, _, tb), (br, _, bb)) = art.cells[last];
+    assert!(tb > 200 && tr < 60, "top of last row should be blue");
+    assert!(bb > 200 && br < 60, "bottom of last row should be blue");
+  }
+
+  #[test]
+  fn smallest_image_url_prefers_narrowest() {
+    use rspotify::model::Image;
+    let images = vec![
+      Image {
+        height: Some(640),
+        url: "big".into(),
+        width: Some(640),
+      },
+      Image {
+        height: Some(64),
+        url: "small".into(),
+        width: Some(64),
+      },
+      Image {
+        height: Some(300),
+        url: "mid".into(),
+        width: Some(300),
+      },
+    ];
+    assert_eq!(smallest_image_url(&images).as_deref(), Some("small"));
+    assert_eq!(smallest_image_url(&[]), None);
+  }
+
+  /// Width is nullable in the API; unknown widths must not win the min().
+  #[test]
+  fn smallest_image_url_handles_null_width() {
+    use rspotify::model::Image;
+    let images = vec![
+      Image {
+        height: None,
+        url: "unknown".into(),
+        width: None,
+      },
+      Image {
+        height: Some(64),
+        url: "known".into(),
+        width: Some(64),
+      },
+    ];
+    assert_eq!(smallest_image_url(&images).as_deref(), Some("known"));
+  }
 }

@@ -30,6 +30,7 @@ tokio = { version = "1", features = [
   "io-util",
   "io-std",
   "net",
+  "process",
 ] }
 futures = "0.3"
 
