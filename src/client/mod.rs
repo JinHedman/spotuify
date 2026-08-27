@@ -160,12 +160,37 @@ impl Network {
   }
 
   async fn get_playlists(&self) -> Result<()> {
-    let page = self
-      .spotify
-      .current_user_playlists_manual(Some(50), None)
-      .await?;
+    // `/me/playlists` caps `limit` at 50, so a single request silently truncates
+    // any library with more than 50 playlists. Page until Spotify says there is
+    // no next page.
+    //
+    // The end signal is `page.next == None`, not a short page: Spotify filters
+    // unavailable entries out of a page *after* applying `limit`, so a page of
+    // 47 does not mean the list is exhausted. Bailing on a short page is what
+    // makes playlists go missing from the middle of the list.
+    //
+    // 10k matches Spotify's per-user playlist hard limit and keeps us well
+    // inside the documented 100k max offset.
+    const PAGE_LIMIT: u32 = 50;
+    const MAX_PLAYLISTS: usize = 10_000;
+    let mut playlists = Vec::new();
+    let mut offset: u32 = 0;
+    loop {
+      let page = self
+        .spotify
+        .current_user_playlists_manual(Some(PAGE_LIMIT), Some(offset))
+        .await?;
+      let has_next = page.next.is_some();
+      playlists.extend(page.items);
+      if !has_next || playlists.len() >= MAX_PLAYLISTS {
+        break;
+      }
+      offset += PAGE_LIMIT;
+    }
     let mut state = self.state.lock().unwrap();
-    state.playlists = page.items;
+    state.playlists = playlists;
+    // Clamp rather than reset — this runs again after an unfollow, and the
+    // user's cursor should stay where it was.
     state.playlists_index = state
       .playlists_index
       .min(state.playlists.len().saturating_sub(1));
