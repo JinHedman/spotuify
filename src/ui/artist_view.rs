@@ -62,6 +62,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
         &mut state.artist_view.tracks_offset,
         visible,
         SCROLL_MARGIN,
+        state.artist_view.tracks.len(),
       );
       let list = List::new(items).highlight_style(
         Style::default()
@@ -98,6 +99,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
         &mut state.artist_view.albums_offset,
         visible,
         SCROLL_MARGIN,
+        state.artist_view.albums.len(),
       );
       let list = List::new(items).highlight_style(
         Style::default()

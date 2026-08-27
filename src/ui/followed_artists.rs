@@ -45,6 +45,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
     &mut state.followed_artists_offset,
     visible,
     SCROLL_MARGIN,
+    state.followed_artists.len(),
   );
 
   let mut list_state = ListState::default();
