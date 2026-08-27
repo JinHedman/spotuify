@@ -1,5 +1,6 @@
 use crate::app::{AppState, CoverArt, PlaylistCover, Rgb, TrackRow, COVER_COLS, COVER_ROWS};
 use anyhow::{Context, Result};
+use rspotify::model::playlist::SimplifiedPlaylist;
 use rspotify::model::{
   AdditionalType, AlbumId, AlbumType, ArtistId, EpisodeId, LibraryId, Market, Offset,
   PlayContextId, PlayableId, PlayableItem, PlaylistId, SearchResult, SearchType, ShowId,
@@ -178,6 +179,28 @@ impl Network {
     // inside the documented 100k max offset.
     const PAGE_LIMIT: u32 = 50;
     const MAX_PLAYLISTS: usize = 10_000;
+
+    // Resolved before paging so a failure here just disables filtering rather
+    // than failing the whole load.
+    let only_own = {
+      let s = self.state.lock().unwrap();
+      s.config.behavior.only_own_playlists
+    };
+    let me: Option<String> = if only_own {
+      match self.spotify.current_user().await {
+        Ok(user) => Some(user.id.id().to_string()),
+        Err(err) => {
+          warn!(
+            ?err,
+            "could not resolve current user; showing all playlists"
+          );
+          None
+        }
+      }
+    } else {
+      None
+    };
+
     let mut playlists = Vec::new();
     let mut offset: u32 = 0;
     loop {
@@ -192,12 +215,25 @@ impl Network {
       }
       offset += PAGE_LIMIT;
     }
+
+    // Spotify's Feb 2026 restriction means `/playlists/{id}/items` 403s for
+    // playlists we don't own, so listing them produces an error row rather
+    // than tracks. Hide them by default, but count what we dropped — a list
+    // that is silently short is the bug we just fixed in pagination.
+    let mut hidden = 0;
+    if let Some(me) = &me {
+      let before = playlists.len();
+      playlists.retain(|p: &SimplifiedPlaylist| p.owner.id.id() == me.as_str());
+      hidden = before - playlists.len();
+    }
+
     // Scoped so the guard is structurally dropped before the await below —
     // an explicit drop() still leaves it in the future's captured state and
     // makes the whole network task non-Send.
     {
       let mut state = self.state.lock().unwrap();
       state.playlists = playlists;
+      state.playlists_hidden = hidden;
       // Clamp rather than reset — this runs again after an unfollow, and the
       // user's cursor should stay where it was.
       state.playlists_index = state

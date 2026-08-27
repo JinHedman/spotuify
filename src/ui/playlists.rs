@@ -12,12 +12,18 @@ const SCROLL_MARGIN: usize = 2;
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
   let theme = state.theme;
-  let block = layout::block(
-    "Playlists",
-    ActiveBlock::MyPlaylists,
-    state.active_block,
-    &theme,
-  );
+  // Say so when the owner filter is hiding entries, so a short list never
+  // looks like missing data.
+  let title = if state.playlists_hidden > 0 {
+    format!(
+      "Playlists ({} yours, {} hidden)",
+      state.playlists.len(),
+      state.playlists_hidden
+    )
+  } else {
+    "Playlists".to_string()
+  };
+  let block = layout::block(&title, ActiveBlock::MyPlaylists, state.active_block, &theme);
 
   if state.playlists.is_empty() {
     let placeholder = Paragraph::new("(loading…)").block(block);
@@ -46,6 +52,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
     &mut state.playlists_offset,
     visible,
     SCROLL_MARGIN,
+    state.playlists.len(),
   );
 
   let mut list_state = ListState::default();

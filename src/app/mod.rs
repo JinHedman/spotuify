@@ -158,6 +158,9 @@ pub struct AppState {
   pub playlists: Vec<SimplifiedPlaylist>,
   pub playlists_index: usize,
   pub playlists_offset: usize,
+  /// How many playlists the owner filter removed, so the UI can say so
+  /// instead of silently showing a short list.
+  pub playlists_hidden: usize,
   /// Rendered cover for the currently selected playlist, if any.
   pub playlist_cover: Option<PlaylistCover>,
   /// Set once ffmpeg turns out to be missing or unusable, so we stop trying
@@ -235,6 +238,7 @@ impl AppState {
       playlists: Vec::new(),
       playlists_index: 0,
       playlists_offset: 0,
+      playlists_hidden: 0,
       playlist_cover: None,
       cover_render_disabled: false,
       track_list: Vec::new(),
