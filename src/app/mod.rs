@@ -14,6 +14,7 @@ use rspotify::model::{
   track::{FullTrack, SimplifiedTrack},
   PlayableItem,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -163,6 +164,11 @@ pub struct AppState {
   pub playlists_hidden: usize,
   /// Rendered cover for the currently selected playlist, if any.
   pub playlist_cover: Option<PlaylistCover>,
+  /// Covers already rendered this session, keyed by artwork id (not playlist
+  /// id, so changing a playlist's picture invalidates naturally). Each entry
+  /// is `COVER_COLS * COVER_ROWS * 6` bytes — under 2 KB — so even the 10k
+  /// playlist ceiling caps this at ~17 MB. Left unbounded on purpose.
+  pub cover_cache: HashMap<String, CoverArt>,
   /// Set once ffmpeg turns out to be missing or unusable, so we stop trying
   /// on every selection change.
   pub cover_render_disabled: bool,
@@ -240,6 +246,7 @@ impl AppState {
       playlists_offset: 0,
       playlists_hidden: 0,
       playlist_cover: None,
+      cover_cache: HashMap::new(),
       cover_render_disabled: false,
       track_list: Vec::new(),
       track_list_title: String::new(),

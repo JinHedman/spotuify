@@ -89,7 +89,8 @@ All keys except `Ctrl+C` are remappable via `config.yml` (see below).
 - **Authentication** — OAuth auth-code flow with cached token + automatic refresh.
 - **Playbar** — current track/episode, play/pause icon, volume, smooth extrapolated progress bar (moves between polls).
 - **Sidebar** — `Library` (fixed entries) + `Playlists` (your own playlists) + `Cover` art for the selected playlist.
-- **Playlist cover art** — the selected playlist's cover is drawn with half-block glyphs (two full-colour pixels per terminal cell, 24x24 px). Decoding is shelled out to ffmpeg, which fetches the image URL itself; no cover is fetched twice and no extra Spotify request is made. Needs enough sidebar height, otherwise the pane is dropped.
+- **Playlist cover art** — the selected playlist's cover is drawn with half-block glyphs (two full-colour pixels per terminal cell, 24x24 px). Decoding is shelled out to ffmpeg, which fetches the image URL itself; no extra Spotify request is made. Needs enough sidebar height, otherwise the pane is dropped.
+- **Cover cache** — rendered covers are cached in memory for the session and on disk across runs, so ffmpeg runs once per distinct artwork rather than on every selection or restart. Cache lives in the OS cache directory (`~/Library/Caches/io.spotuify/covers` on macOS, `~/.cache/spotuify/covers` on Linux); each entry is under 2 KB. Entries are keyed by artwork, so changing a playlist's picture invalidates it automatically. Safe to delete at any time — it will simply be rebuilt.
 - **Owner filter** — by default only playlists you created are listed, because Spotify 403s track listings for anyone else's playlist (see "Known limitations"). The `Playlists` title reports how many were hidden. Set `behavior.only_own_playlists: false` to show them all again; `Enter` still starts playback on a followed playlist even though its listing fails.
 - **Library entries**
   - **Liked Songs** → saved tracks in TrackTable

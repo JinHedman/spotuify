@@ -294,8 +294,45 @@ impl Network {
       return Ok(());
     };
 
+    let key = cover_cache_key(&url);
+
+    // Tier 1: already rendered this session. Costs a hash lookup, so scrolling
+    // back over playlists you have already visited never touches ffmpeg.
+    if let Some(art) = {
+      let s = self.state.lock().unwrap();
+      s.cover_cache.get(&key).cloned()
+    } {
+      self.publish_cover(&playlist_id, Some(art));
+      return Ok(());
+    }
+
+    // Tier 2: rendered by an earlier run. Under 2 KB per read, so this is far
+    // cheaper than a CDN fetch plus an ffmpeg spawn on every startup.
+    if let Some(art) = read_cached_cover(&key).await {
+      self
+        .state
+        .lock()
+        .unwrap()
+        .cover_cache
+        .insert(key, art.clone());
+      self.publish_cover(&playlist_id, Some(art));
+      return Ok(());
+    }
+
     let art = match render_cover(&url).await {
-      Ok(art) => Some(art),
+      Ok(art) => {
+        // Best effort: a cache we cannot write is a slow cache, not an error.
+        if let Err(err) = write_cached_cover(&key, &art).await {
+          warn!(?err, "could not persist cover cache entry");
+        }
+        self
+          .state
+          .lock()
+          .unwrap()
+          .cover_cache
+          .insert(key, art.clone());
+        Some(art)
+      }
       Err(err) => {
         if is_ffmpeg_missing(&err) {
           warn!(
@@ -310,6 +347,13 @@ impl Network {
       }
     };
 
+    self.publish_cover(&playlist_id, art);
+    Ok(())
+  }
+
+  /// Publish a cover, but only if the cursor has not moved on to a different
+  /// playlist while we were fetching or rendering it.
+  fn publish_cover(&self, playlist_id: &str, art: Option<CoverArt>) {
     let mut s = self.state.lock().unwrap();
     // The selection may have moved while ffmpeg ran. Only publish if the
     // playlist we rendered is still the one under the cursor.
@@ -318,9 +362,11 @@ impl Network {
       .get(s.playlists_index)
       .is_some_and(|p| p.id.id() == playlist_id);
     if still_selected {
-      s.playlist_cover = Some(PlaylistCover { playlist_id, art });
+      s.playlist_cover = Some(PlaylistCover {
+        playlist_id: playlist_id.to_string(),
+        art,
+      });
     }
-    Ok(())
   }
 
   async fn get_playlist_tracks(&self, playlist_id: &str, playlist_name: &str) -> Result<()> {
@@ -1137,6 +1183,87 @@ fn is_ffmpeg_missing(err: &anyhow::Error) -> bool {
     .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
 }
 
+/// Bytes per cell on disk: two RGB triples (top pixel, bottom pixel).
+const CACHE_BYTES_PER_CELL: usize = 6;
+
+/// Cache key for a cover image.
+///
+/// Spotify image URLs are content addressed — the final path segment changes
+/// when the artwork changes. That makes it a correct invalidation key even
+/// though the URL as a whole is documented as expiring within a day: a rotated
+/// URL for unchanged artwork still hits, and changed artwork always misses.
+fn cover_cache_key(url: &str) -> String {
+  let path = url.split(['?', '#']).next().unwrap_or(url);
+  let segment: String = path
+    .rsplit('/')
+    .next()
+    .unwrap_or_default()
+    .chars()
+    .filter(|c| c.is_ascii_alphanumeric())
+    .take(64)
+    .collect();
+  if !segment.is_empty() {
+    return segment;
+  }
+  // Unrecognisable URL shape — fall back to hashing it. DefaultHasher is not
+  // stable across Rust releases, which for a cache means an occasional miss
+  // after a toolchain upgrade. That is acceptable; correctness does not
+  // depend on it.
+  use std::hash::{Hash, Hasher};
+  let mut hasher = std::collections::hash_map::DefaultHasher::new();
+  url.hash(&mut hasher);
+  format!("h{:016x}", hasher.finish())
+}
+
+/// Cache entries carry their grid size in the filename, so changing
+/// COVER_COLS or COVER_ROWS invalidates every old entry instead of loading
+/// one at the wrong dimensions.
+fn cover_cache_path(key: &str) -> Option<std::path::PathBuf> {
+  let dir = crate::config::cover_cache_dir().ok()?;
+  Some(dir.join(format!("{key}-{COVER_COLS}x{COVER_ROWS}.rgb")))
+}
+
+/// Cells are stored in cell order — 6 bytes each — so read and write are
+/// exact mirrors and no framing or version header is needed.
+async fn read_cached_cover(key: &str) -> Option<CoverArt> {
+  let path = cover_cache_path(key)?;
+  let bytes = tokio::fs::read(&path).await.ok()?;
+  let expected = COVER_COLS as usize * COVER_ROWS as usize * CACHE_BYTES_PER_CELL;
+  if bytes.len() != expected {
+    // Truncated or half-written entry. Drop it and re-render.
+    warn!(path = %path.display(), "discarding malformed cover cache entry");
+    let _ = tokio::fs::remove_file(&path).await;
+    return None;
+  }
+  let cells = bytes
+    .chunks_exact(CACHE_BYTES_PER_CELL)
+    .map(|c| ((c[0], c[1], c[2]), (c[3], c[4], c[5])))
+    .collect();
+  Some(CoverArt {
+    cols: COVER_COLS,
+    rows: COVER_ROWS,
+    cells,
+  })
+}
+
+async fn write_cached_cover(key: &str, art: &CoverArt) -> Result<()> {
+  let path = cover_cache_path(key).context("resolving cover cache path")?;
+  let mut bytes = Vec::with_capacity(art.cells.len() * CACHE_BYTES_PER_CELL);
+  for ((tr, tg, tb), (br, bg, bb)) in &art.cells {
+    bytes.extend_from_slice(&[*tr, *tg, *tb, *br, *bg, *bb]);
+  }
+  // Write to a temp file and rename, so a crash mid-write cannot leave a
+  // short file that a later run would read as valid.
+  let tmp = path.with_extension("rgb.tmp");
+  tokio::fs::write(&tmp, &bytes)
+    .await
+    .with_context(|| format!("writing {}", tmp.display()))?;
+  tokio::fs::rename(&tmp, &path)
+    .await
+    .with_context(|| format!("renaming into {}", path.display()))?;
+  Ok(())
+}
+
 /// How long we give ffmpeg to fetch and decode before giving up. Generous for
 /// a CDN round trip, short enough that a hung process can't wedge the network
 /// task (which is serial — a stuck render would stall playback polling).
@@ -1270,6 +1397,87 @@ mod tests {
     let ((tr, _, tb), (br, _, bb)) = art.cells[last];
     assert!(tb > 200 && tr < 60, "top of last row should be blue");
     assert!(bb > 200 && br < 60, "bottom of last row should be blue");
+  }
+
+  /// Same artwork must hit even when the URL's expiring query token rotates;
+  /// different artwork must miss. Both directions matter: the first prevents
+  /// pointless re-renders, the second prevents showing a stale cover.
+  #[test]
+  fn cache_key_tracks_artwork_not_url() {
+    let a = "https://i.scdn.co/image/ab67706c0000da84aaaa1111";
+    let rotated = "https://i.scdn.co/image/ab67706c0000da84aaaa1111?token=xyz&t=99";
+    let different = "https://i.scdn.co/image/ab67706c0000da84bbbb2222";
+
+    assert_eq!(cover_cache_key(a), cover_cache_key(rotated), "same artwork");
+    assert_ne!(
+      cover_cache_key(a),
+      cover_cache_key(different),
+      "different artwork"
+    );
+  }
+
+  #[test]
+  fn cache_key_is_filesystem_safe() {
+    for url in [
+      "https://i.scdn.co/image/../../etc/passwd",
+      "https://i.scdn.co/image/",
+      "not even a url",
+      "",
+    ] {
+      let key = cover_cache_key(url);
+      assert!(!key.is_empty(), "key for {url:?} must not be empty");
+      assert!(
+        key.chars().all(|c| c.is_ascii_alphanumeric()),
+        "key for {url:?} must be alphanumeric, got {key:?}"
+      );
+    }
+  }
+
+  fn sample_art() -> CoverArt {
+    let cells = (0..COVER_COLS as usize * COVER_ROWS as usize)
+      .map(|i| {
+        let n = i as u8;
+        ((n, n.wrapping_add(1), n.wrapping_add(2)), (n, 0, 255 - n))
+      })
+      .collect();
+    CoverArt {
+      cols: COVER_COLS,
+      rows: COVER_ROWS,
+      cells,
+    }
+  }
+
+  #[tokio::test]
+  async fn cache_round_trip_is_lossless() {
+    let art = sample_art();
+    let key = "spotuifytestroundtrip";
+    write_cached_cover(key, &art).await.unwrap();
+    let back = read_cached_cover(key).await.expect("cache entry readable");
+
+    assert_eq!(back.cols, art.cols);
+    assert_eq!(back.rows, art.rows);
+    assert_eq!(back.cells, art.cells, "cells must survive verbatim");
+
+    let _ = tokio::fs::remove_file(cover_cache_path(key).unwrap()).await;
+  }
+
+  /// A truncated entry (crash mid-write, full disk) must be discarded rather
+  /// than rendered as a partial cover.
+  #[tokio::test]
+  async fn cache_rejects_and_removes_truncated_entry() {
+    let key = "spotuifytesttruncated";
+    let path = cover_cache_path(key).unwrap();
+    tokio::fs::write(&path, b"too short").await.unwrap();
+
+    assert!(read_cached_cover(key).await.is_none(), "must not be used");
+    assert!(!path.exists(), "malformed entry should be removed");
+  }
+
+  #[tokio::test]
+  async fn cache_miss_returns_none() {
+    assert!(read_cached_cover("spotuifytestdefinitelyabsent")
+      .await
+      .is_none());
   }
 
   #[test]
