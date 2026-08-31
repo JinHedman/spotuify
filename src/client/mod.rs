@@ -1235,8 +1235,13 @@ async fn read_cached_cover(key: &str) -> Option<CoverArt> {
     let _ = tokio::fs::remove_file(&path).await;
     return None;
   }
+  // as_chunks rather than chunks_exact: clippy's chunks_exact_to_as_chunks
+  // lint (stable since 1.98) rejects chunks_exact with a const size, and CI
+  // builds with -D warnings.
   let cells = bytes
-    .chunks_exact(CACHE_BYTES_PER_CELL)
+    .as_chunks::<CACHE_BYTES_PER_CELL>()
+    .0
+    .iter()
     .map(|c| ((c[0], c[1], c[2]), (c[3], c[4], c[5])))
     .collect();
   Some(CoverArt {
