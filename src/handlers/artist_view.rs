@@ -123,14 +123,8 @@ enum Action {
 fn move_selection(state: &Mutex<AppState>, delta: i32) {
   let mut s = state.lock().unwrap();
   let (idx, max_len) = match s.artist_view.tab {
-    ArtistTab::Tracks => (
-      s.artist_view.tracks_index,
-      s.artist_view.tracks.len(),
-    ),
-    ArtistTab::Albums => (
-      s.artist_view.albums_index,
-      s.artist_view.albums.len(),
-    ),
+    ArtistTab::Tracks => (s.artist_view.tracks_index, s.artist_view.tracks.len()),
+    ArtistTab::Albums => (s.artist_view.albums_index, s.artist_view.albums.len()),
   };
   if max_len == 0 {
     return;

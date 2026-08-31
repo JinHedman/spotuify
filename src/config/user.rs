@@ -11,6 +11,14 @@ pub struct Behavior {
   pub tick_rate_ms: u64,
   pub volume_step: u8,
   pub seek_step_ms: i64,
+  /// Hide playlists you follow but did not create.
+  ///
+  /// Spotify's Feb 2026 restriction on `/playlists/{id}/items` means apps
+  /// without extended quota get a 403 listing anyone else's playlist, so
+  /// followed playlists show an error row instead of tracks. Defaults to
+  /// hiding them. Set false to show them again — `Enter` still starts
+  /// playback on them via Spotify Connect even though the listing fails.
+  pub only_own_playlists: bool,
 }
 
 impl Default for Behavior {
@@ -20,6 +28,7 @@ impl Default for Behavior {
       tick_rate_ms: 200,
       volume_step: 10,
       seek_step_ms: 5000,
+      only_own_playlists: true,
     }
   }
 }

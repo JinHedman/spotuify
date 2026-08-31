@@ -18,16 +18,22 @@ pub(super) async fn handle(
     } else {
       1
     };
-    let mut s = state.lock().unwrap();
-    if !s.playlists.is_empty() {
-      s.playlists_index = (s.playlists_index + step).min(s.playlists.len() - 1);
+    {
+      let mut s = state.lock().unwrap();
+      if !s.playlists.is_empty() {
+        s.playlists_index = (s.playlists_index + step).min(s.playlists.len() - 1);
+      }
     }
+    let _ = io_tx.send(IoEvent::RefreshPlaylistCover).await;
     return;
   }
   if keys.move_up.matches(&key) || keys.move_up_big.matches(&key) {
     let step = if keys.move_up_big.matches(&key) { 5 } else { 1 };
-    let mut s = state.lock().unwrap();
-    s.playlists_index = s.playlists_index.saturating_sub(step);
+    {
+      let mut s = state.lock().unwrap();
+      s.playlists_index = s.playlists_index.saturating_sub(step);
+    }
+    let _ = io_tx.send(IoEvent::RefreshPlaylistCover).await;
     return;
   }
   if keys.delete_playlist.matches(&key) {

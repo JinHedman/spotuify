@@ -8,6 +8,7 @@ pub mod layout;
 pub mod legend;
 pub mod library;
 pub mod playbar;
+pub mod playlist_cover;
 pub mod playlists;
 pub mod queue;
 pub mod saved_albums;
@@ -21,7 +22,7 @@ pub mod theme_picker;
 pub mod too_small;
 pub mod track_table;
 
-use crate::app::{ActiveBlock, AppState};
+use crate::app::{ActiveBlock, AppState, COVER_ROWS};
 use ratatui::{
   layout::{Constraint, Direction, Layout},
   Frame,
@@ -40,6 +41,10 @@ const BANNER_MIN_WIDTH: u16 = 80;
 /// Width of the left column (sidebar below, banner above). Kept constant so
 /// the banner lines up with the Library / Playlists boxes under it.
 const SIDEBAR_WIDTH: u16 = 38;
+/// Playlist rows that must survive before the cover box earns its space.
+const MIN_PLAYLIST_ROWS: u16 = 8;
+/// Cover art plus its border.
+const COVER_HEIGHT: u16 = COVER_ROWS + 2;
 
 pub fn draw(frame: &mut Frame, state: &Arc<Mutex<AppState>>) {
   let area = frame.area();
@@ -115,14 +120,27 @@ pub fn draw(frame: &mut Frame, state: &Arc<Mutex<AppState>>) {
     )
     .split(rows[1]);
 
+    // The cover box is fixed height. Only give it room when the playlist list
+    // can still show a useful number of entries, otherwise the art crowds out
+    // the thing it annotates.
+    let show_cover = cols[0].height >= 7 + COVER_HEIGHT + MIN_PLAYLIST_ROWS;
+    let cover_height = if show_cover { COVER_HEIGHT } else { 0 };
+
     let sidebar = Layout::new(
       Direction::Vertical,
-      [Constraint::Length(7), Constraint::Min(1)],
+      [
+        Constraint::Length(7),
+        Constraint::Min(1),
+        Constraint::Length(cover_height),
+      ],
     )
     .split(cols[0]);
 
     library::draw(frame, sidebar[0], &state);
     playlists::draw(frame, sidebar[1], &mut state);
+    if show_cover {
+      playlist_cover::draw(frame, sidebar[2], &state);
+    }
     cols[1]
   } else {
     rows[1]

@@ -1,5 +1,6 @@
-use crate::app::{AppState, TrackRow};
+use crate::app::{AppState, CoverArt, PlaylistCover, Rgb, TrackRow, COVER_COLS, COVER_ROWS};
 use anyhow::{Context, Result};
+use rspotify::model::playlist::SimplifiedPlaylist;
 use rspotify::model::{
   AdditionalType, AlbumId, AlbumType, ArtistId, EpisodeId, LibraryId, Market, Offset,
   PlayContextId, PlayableId, PlayableItem, PlaylistId, SearchResult, SearchType, ShowId,
@@ -16,6 +17,10 @@ use tracing::warn;
 pub enum IoEvent {
   GetCurrentPlayback,
   GetPlaylists,
+  /// Render cover art for whichever playlist is selected *now*. Carries no
+  /// id on purpose: the network task re-reads the selection when it dequeues,
+  /// so a burst of these from held-down j/k collapses to a single render.
+  RefreshPlaylistCover,
   GetPlaylistTracks {
     playlist_id: String,
     playlist_name: String,
@@ -95,6 +100,7 @@ impl Network {
       IoEvent::Shutdown => Ok(()),
       IoEvent::GetCurrentPlayback => self.get_current_playback().await,
       IoEvent::GetPlaylists => self.get_playlists().await,
+      IoEvent::RefreshPlaylistCover => self.refresh_playlist_cover().await,
       IoEvent::GetPlaylistTracks {
         playlist_id,
         playlist_name,
@@ -160,16 +166,207 @@ impl Network {
   }
 
   async fn get_playlists(&self) -> Result<()> {
-    let page = self
-      .spotify
-      .current_user_playlists_manual(Some(50), None)
-      .await?;
-    let mut state = self.state.lock().unwrap();
-    state.playlists = page.items;
-    state.playlists_index = state
-      .playlists_index
-      .min(state.playlists.len().saturating_sub(1));
+    // `/me/playlists` caps `limit` at 50, so a single request silently truncates
+    // any library with more than 50 playlists. Page until Spotify says there is
+    // no next page.
+    //
+    // The end signal is `page.next == None`, not a short page: Spotify filters
+    // unavailable entries out of a page *after* applying `limit`, so a page of
+    // 47 does not mean the list is exhausted. Bailing on a short page is what
+    // makes playlists go missing from the middle of the list.
+    //
+    // 10k matches Spotify's per-user playlist hard limit and keeps us well
+    // inside the documented 100k max offset.
+    const PAGE_LIMIT: u32 = 50;
+    const MAX_PLAYLISTS: usize = 10_000;
+
+    // Resolved before paging so a failure here just disables filtering rather
+    // than failing the whole load.
+    let only_own = {
+      let s = self.state.lock().unwrap();
+      s.config.behavior.only_own_playlists
+    };
+    let me: Option<String> = if only_own {
+      match self.spotify.current_user().await {
+        Ok(user) => Some(user.id.id().to_string()),
+        Err(err) => {
+          warn!(
+            ?err,
+            "could not resolve current user; showing all playlists"
+          );
+          None
+        }
+      }
+    } else {
+      None
+    };
+
+    let mut playlists = Vec::new();
+    let mut offset: u32 = 0;
+    loop {
+      let page = self
+        .spotify
+        .current_user_playlists_manual(Some(PAGE_LIMIT), Some(offset))
+        .await?;
+      let has_next = page.next.is_some();
+      playlists.extend(page.items);
+      if !has_next || playlists.len() >= MAX_PLAYLISTS {
+        break;
+      }
+      offset += PAGE_LIMIT;
+    }
+
+    // Spotify's Feb 2026 restriction means `/playlists/{id}/items` 403s for
+    // playlists we don't own, so listing them produces an error row rather
+    // than tracks. Hide them by default, but count what we dropped — a list
+    // that is silently short is the bug we just fixed in pagination.
+    let mut hidden = 0;
+    if let Some(me) = &me {
+      let before = playlists.len();
+      playlists.retain(|p: &SimplifiedPlaylist| p.owner.id.id() == me.as_str());
+      hidden = before - playlists.len();
+    }
+
+    // Scoped so the guard is structurally dropped before the await below —
+    // an explicit drop() still leaves it in the future's captured state and
+    // makes the whole network task non-Send.
+    {
+      let mut state = self.state.lock().unwrap();
+      state.playlists = playlists;
+      state.playlists_hidden = hidden;
+      // Clamp rather than reset — this runs again after an unfollow, and the
+      // user's cursor should stay where it was.
+      state.playlists_index = state
+        .playlists_index
+        .min(state.playlists.len().saturating_sub(1));
+      // A new list invalidates whatever cover we were showing.
+      state.playlist_cover = None;
+    }
+    // Render art for the initially selected playlist so the pane is populated
+    // before the user touches the cursor.
+    self.refresh_playlist_cover().await
+  }
+
+  /// Render the selected playlist's cover into half-block cells.
+  ///
+  /// Shells out to ffmpeg, which decodes the JPEG, scales it to the cell grid
+  /// and hands back raw RGB. ffmpeg is built with TLS here, so it fetches the
+  /// CDN URL itself and we need no HTTP client of our own.
+  ///
+  /// Best-effort by design: a missing ffmpeg, a dead URL or a slow CDN must
+  /// never surface as a UI error, because this runs on ordinary cursor
+  /// movement. Failures are logged and leave the pane empty.
+  async fn refresh_playlist_cover(&self) -> Result<()> {
+    // Decide what (if anything) to render while holding the lock, then drop it
+    // before the await — ffmpeg takes tens of milliseconds and the UI thread
+    // redraws off this same mutex.
+    let target = {
+      let s = self.state.lock().unwrap();
+      if s.cover_render_disabled {
+        return Ok(());
+      }
+      let Some(playlist) = s.playlists.get(s.playlists_index) else {
+        return Ok(());
+      };
+      let id = playlist.id.id().to_string();
+      // Already resolved for this playlist — this is what makes a burst of
+      // queued refreshes collapse instead of re-spawning ffmpeg per keypress.
+      if s
+        .playlist_cover
+        .as_ref()
+        .is_some_and(|c| c.playlist_id == id)
+      {
+        return Ok(());
+      }
+      smallest_image_url(&playlist.images).map(|url| (id, url))
+    };
+
+    let Some((playlist_id, url)) = target else {
+      // No image on this playlist. Record that so we don't look again.
+      let mut s = self.state.lock().unwrap();
+      if let Some(playlist) = s.playlists.get(s.playlists_index) {
+        let id = playlist.id.id().to_string();
+        s.playlist_cover = Some(PlaylistCover {
+          playlist_id: id,
+          art: None,
+        });
+      }
+      return Ok(());
+    };
+
+    let key = cover_cache_key(&url);
+
+    // Tier 1: already rendered this session. Costs a hash lookup, so scrolling
+    // back over playlists you have already visited never touches ffmpeg.
+    if let Some(art) = {
+      let s = self.state.lock().unwrap();
+      s.cover_cache.get(&key).cloned()
+    } {
+      self.publish_cover(&playlist_id, Some(art));
+      return Ok(());
+    }
+
+    // Tier 2: rendered by an earlier run. Under 2 KB per read, so this is far
+    // cheaper than a CDN fetch plus an ffmpeg spawn on every startup.
+    if let Some(art) = read_cached_cover(&key).await {
+      self
+        .state
+        .lock()
+        .unwrap()
+        .cover_cache
+        .insert(key, art.clone());
+      self.publish_cover(&playlist_id, Some(art));
+      return Ok(());
+    }
+
+    let art = match render_cover(&url).await {
+      Ok(art) => {
+        // Best effort: a cache we cannot write is a slow cache, not an error.
+        if let Err(err) = write_cached_cover(&key, &art).await {
+          warn!(?err, "could not persist cover cache entry");
+        }
+        self
+          .state
+          .lock()
+          .unwrap()
+          .cover_cache
+          .insert(key, art.clone());
+        Some(art)
+      }
+      Err(err) => {
+        if is_ffmpeg_missing(&err) {
+          warn!(
+            ?err,
+            "ffmpeg unavailable — disabling cover art for this run"
+          );
+          self.state.lock().unwrap().cover_render_disabled = true;
+          return Ok(());
+        }
+        warn!(?err, url = %url, "cover render failed");
+        None
+      }
+    };
+
+    self.publish_cover(&playlist_id, art);
     Ok(())
+  }
+
+  /// Publish a cover, but only if the cursor has not moved on to a different
+  /// playlist while we were fetching or rendering it.
+  fn publish_cover(&self, playlist_id: &str, art: Option<CoverArt>) {
+    let mut s = self.state.lock().unwrap();
+    // The selection may have moved while ffmpeg ran. Only publish if the
+    // playlist we rendered is still the one under the cursor.
+    let still_selected = s
+      .playlists
+      .get(s.playlists_index)
+      .is_some_and(|p| p.id.id() == playlist_id);
+    if still_selected {
+      s.playlist_cover = Some(PlaylistCover {
+        playlist_id: playlist_id.to_string(),
+        art,
+      });
+    }
   }
 
   async fn get_playlist_tracks(&self, playlist_id: &str, playlist_name: &str) -> Result<()> {
@@ -967,4 +1164,367 @@ fn parse_context_uri(uri: &str) -> Result<PlayContextId<'static>> {
     return Ok(PlayContextId::Artist(id.into_static()));
   }
   anyhow::bail!("unsupported context URI: {uri}")
+}
+
+/// Spotify returns playlist images largest-first. We only ever draw a
+/// `COVER_COLS`-wide thumbnail, so take the smallest available and save the
+/// bandwidth. `width` is nullable, so fall back to document order.
+fn smallest_image_url(images: &[rspotify::model::Image]) -> Option<String> {
+  images
+    .iter()
+    .min_by_key(|i| i.width.unwrap_or(u32::MAX))
+    .or_else(|| images.last())
+    .map(|i| i.url.clone())
+}
+
+fn is_ffmpeg_missing(err: &anyhow::Error) -> bool {
+  err
+    .downcast_ref::<std::io::Error>()
+    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// Bytes per cell on disk: two RGB triples (top pixel, bottom pixel).
+const CACHE_BYTES_PER_CELL: usize = 6;
+
+/// Cache key for a cover image.
+///
+/// Spotify image URLs are content addressed — the final path segment changes
+/// when the artwork changes. That makes it a correct invalidation key even
+/// though the URL as a whole is documented as expiring within a day: a rotated
+/// URL for unchanged artwork still hits, and changed artwork always misses.
+fn cover_cache_key(url: &str) -> String {
+  let path = url.split(['?', '#']).next().unwrap_or(url);
+  let segment: String = path
+    .rsplit('/')
+    .next()
+    .unwrap_or_default()
+    .chars()
+    .filter(|c| c.is_ascii_alphanumeric())
+    .take(64)
+    .collect();
+  if !segment.is_empty() {
+    return segment;
+  }
+  // Unrecognisable URL shape — fall back to hashing it. DefaultHasher is not
+  // stable across Rust releases, which for a cache means an occasional miss
+  // after a toolchain upgrade. That is acceptable; correctness does not
+  // depend on it.
+  use std::hash::{Hash, Hasher};
+  let mut hasher = std::collections::hash_map::DefaultHasher::new();
+  url.hash(&mut hasher);
+  format!("h{:016x}", hasher.finish())
+}
+
+/// Cache entries carry their grid size in the filename, so changing
+/// COVER_COLS or COVER_ROWS invalidates every old entry instead of loading
+/// one at the wrong dimensions.
+fn cover_cache_path(key: &str) -> Option<std::path::PathBuf> {
+  let dir = crate::config::cover_cache_dir().ok()?;
+  Some(dir.join(format!("{key}-{COVER_COLS}x{COVER_ROWS}.rgb")))
+}
+
+/// Cells are stored in cell order — 6 bytes each — so read and write are
+/// exact mirrors and no framing or version header is needed.
+async fn read_cached_cover(key: &str) -> Option<CoverArt> {
+  let path = cover_cache_path(key)?;
+  let bytes = tokio::fs::read(&path).await.ok()?;
+  let expected = COVER_COLS as usize * COVER_ROWS as usize * CACHE_BYTES_PER_CELL;
+  if bytes.len() != expected {
+    // Truncated or half-written entry. Drop it and re-render.
+    warn!(path = %path.display(), "discarding malformed cover cache entry");
+    let _ = tokio::fs::remove_file(&path).await;
+    return None;
+  }
+  // as_chunks rather than chunks_exact: clippy's chunks_exact_to_as_chunks
+  // lint (stable since 1.98) rejects chunks_exact with a const size, and CI
+  // builds with -D warnings.
+  let cells = bytes
+    .as_chunks::<CACHE_BYTES_PER_CELL>()
+    .0
+    .iter()
+    .map(|c| ((c[0], c[1], c[2]), (c[3], c[4], c[5])))
+    .collect();
+  Some(CoverArt {
+    cols: COVER_COLS,
+    rows: COVER_ROWS,
+    cells,
+  })
+}
+
+async fn write_cached_cover(key: &str, art: &CoverArt) -> Result<()> {
+  let path = cover_cache_path(key).context("resolving cover cache path")?;
+  let mut bytes = Vec::with_capacity(art.cells.len() * CACHE_BYTES_PER_CELL);
+  for ((tr, tg, tb), (br, bg, bb)) in &art.cells {
+    bytes.extend_from_slice(&[*tr, *tg, *tb, *br, *bg, *bb]);
+  }
+  // Write to a temp file and rename, so a crash mid-write cannot leave a
+  // short file that a later run would read as valid.
+  let tmp = path.with_extension("rgb.tmp");
+  tokio::fs::write(&tmp, &bytes)
+    .await
+    .with_context(|| format!("writing {}", tmp.display()))?;
+  tokio::fs::rename(&tmp, &path)
+    .await
+    .with_context(|| format!("renaming into {}", path.display()))?;
+  Ok(())
+}
+
+/// How long we give ffmpeg to fetch and decode before giving up. Generous for
+/// a CDN round trip, short enough that a hung process can't wedge the network
+/// task (which is serial — a stuck render would stall playback polling).
+const COVER_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn render_cover(url: &str) -> Result<CoverArt> {
+  let cols = COVER_COLS;
+  let rows = COVER_ROWS;
+  let px_w = cols as u32;
+  let px_h = rows as u32 * 2; // two stacked pixels per cell
+
+  let mut cmd = tokio::process::Command::new("ffmpeg");
+  cmd
+    // ffmpeg reads stdin by default. The TUI owns stdin, so without this it
+    // steals the user's keystrokes.
+    .arg("-nostdin")
+    .arg("-loglevel")
+    .arg("error")
+    // The URL is a Spotify API value passed as its own argv entry — never
+    // through a shell — so there is nothing to quote or escape.
+    .arg("-i")
+    .arg(url)
+    .arg("-vframes")
+    .arg("1")
+    .arg("-vf")
+    .arg(format!("scale={px_w}:{px_h}:flags=lanczos"))
+    .arg("-f")
+    .arg("rawvideo")
+    .arg("-pix_fmt")
+    .arg("rgb24")
+    .arg("-")
+    .stdin(std::process::Stdio::null())
+    .kill_on_drop(true);
+
+  let output = tokio::time::timeout(COVER_TIMEOUT, cmd.output())
+    .await
+    .map_err(|_| anyhow::anyhow!("ffmpeg timed out after {COVER_TIMEOUT:?}"))?
+    .map_err(anyhow::Error::from)
+    .context("spawning ffmpeg")?;
+
+  if !output.status.success() {
+    anyhow::bail!(
+      "ffmpeg exited {}: {}",
+      output.status,
+      String::from_utf8_lossy(output.stderr.as_slice()).trim()
+    );
+  }
+
+  let want = (px_w * px_h * 3) as usize;
+  if output.stdout.len() < want {
+    anyhow::bail!(
+      "ffmpeg returned {} bytes, expected {want}",
+      output.stdout.len()
+    );
+  }
+
+  let px = &output.stdout[..want];
+  let at = |x: u32, y: u32| -> Rgb {
+    let i = ((y * px_w + x) * 3) as usize;
+    (px[i], px[i + 1], px[i + 2])
+  };
+
+  let mut cells = Vec::with_capacity((cols as usize) * (rows as usize));
+  for row in 0..rows as u32 {
+    for col in 0..cols as u32 {
+      cells.push((at(col, row * 2), at(col, row * 2 + 1)));
+    }
+  }
+
+  Ok(CoverArt { cols, rows, cells })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::io::Write;
+
+  /// Writes a 48x48 PPM: top half pure red, bottom half pure blue.
+  fn fixture(path: &std::path::Path) {
+    let (w, h) = (48usize, 48usize);
+    let mut buf = format!("P6\n{w} {h}\n255\n").into_bytes();
+    for y in 0..h {
+      let px: [u8; 3] = if y < h / 2 { [255, 0, 0] } else { [0, 0, 255] };
+      for _ in 0..w {
+        buf.extend_from_slice(&px);
+      }
+    }
+    let mut f = std::fs::File::create(path).unwrap();
+    f.write_all(&buf).unwrap();
+  }
+
+  fn have_ffmpeg() -> bool {
+    std::process::Command::new("ffmpeg")
+      .arg("-version")
+      .stdout(std::process::Stdio::null())
+      .stderr(std::process::Stdio::null())
+      .status()
+      .is_ok()
+  }
+
+  /// The half-block encoding is easy to get subtly wrong — rows flipped,
+  /// or fg/bg (top/bottom) swapped. A red-over-blue fixture catches both.
+  #[tokio::test]
+  async fn render_cover_preserves_orientation_and_channels() {
+    if !have_ffmpeg() {
+      eprintln!("skipping: ffmpeg not in PATH");
+      return;
+    }
+    let dir = std::env::temp_dir().join("spotuify-cover-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("fixture.ppm");
+    fixture(&path);
+
+    let art = render_cover(path.to_str().unwrap()).await.unwrap();
+
+    assert_eq!(art.cols, COVER_COLS);
+    assert_eq!(art.rows, COVER_ROWS);
+    assert_eq!(
+      art.cells.len(),
+      COVER_COLS as usize * COVER_ROWS as usize,
+      "one cell per grid position"
+    );
+
+    // First row: both stacked pixels land in the red half.
+    let ((tr, _, tb), (br, _, bb)) = art.cells[0];
+    assert!(tr > 200 && tb < 60, "top of first cell should be red");
+    assert!(br > 200 && bb < 60, "bottom of first cell should be red");
+
+    // Last row: both land in the blue half. If rows were flipped this fails.
+    let last = art.cells.len() - COVER_COLS as usize;
+    let ((tr, _, tb), (br, _, bb)) = art.cells[last];
+    assert!(tb > 200 && tr < 60, "top of last row should be blue");
+    assert!(bb > 200 && br < 60, "bottom of last row should be blue");
+  }
+
+  /// Same artwork must hit even when the URL's expiring query token rotates;
+  /// different artwork must miss. Both directions matter: the first prevents
+  /// pointless re-renders, the second prevents showing a stale cover.
+  #[test]
+  fn cache_key_tracks_artwork_not_url() {
+    let a = "https://i.scdn.co/image/ab67706c0000da84aaaa1111";
+    let rotated = "https://i.scdn.co/image/ab67706c0000da84aaaa1111?token=xyz&t=99";
+    let different = "https://i.scdn.co/image/ab67706c0000da84bbbb2222";
+
+    assert_eq!(cover_cache_key(a), cover_cache_key(rotated), "same artwork");
+    assert_ne!(
+      cover_cache_key(a),
+      cover_cache_key(different),
+      "different artwork"
+    );
+  }
+
+  #[test]
+  fn cache_key_is_filesystem_safe() {
+    for url in [
+      "https://i.scdn.co/image/../../etc/passwd",
+      "https://i.scdn.co/image/",
+      "not even a url",
+      "",
+    ] {
+      let key = cover_cache_key(url);
+      assert!(!key.is_empty(), "key for {url:?} must not be empty");
+      assert!(
+        key.chars().all(|c| c.is_ascii_alphanumeric()),
+        "key for {url:?} must be alphanumeric, got {key:?}"
+      );
+    }
+  }
+
+  fn sample_art() -> CoverArt {
+    let cells = (0..COVER_COLS as usize * COVER_ROWS as usize)
+      .map(|i| {
+        let n = i as u8;
+        ((n, n.wrapping_add(1), n.wrapping_add(2)), (n, 0, 255 - n))
+      })
+      .collect();
+    CoverArt {
+      cols: COVER_COLS,
+      rows: COVER_ROWS,
+      cells,
+    }
+  }
+
+  #[tokio::test]
+  async fn cache_round_trip_is_lossless() {
+    let art = sample_art();
+    let key = "spotuifytestroundtrip";
+    write_cached_cover(key, &art).await.unwrap();
+    let back = read_cached_cover(key).await.expect("cache entry readable");
+
+    assert_eq!(back.cols, art.cols);
+    assert_eq!(back.rows, art.rows);
+    assert_eq!(back.cells, art.cells, "cells must survive verbatim");
+
+    let _ = tokio::fs::remove_file(cover_cache_path(key).unwrap()).await;
+  }
+
+  /// A truncated entry (crash mid-write, full disk) must be discarded rather
+  /// than rendered as a partial cover.
+  #[tokio::test]
+  async fn cache_rejects_and_removes_truncated_entry() {
+    let key = "spotuifytesttruncated";
+    let path = cover_cache_path(key).unwrap();
+    tokio::fs::write(&path, b"too short").await.unwrap();
+
+    assert!(read_cached_cover(key).await.is_none(), "must not be used");
+    assert!(!path.exists(), "malformed entry should be removed");
+  }
+
+  #[tokio::test]
+  async fn cache_miss_returns_none() {
+    assert!(read_cached_cover("spotuifytestdefinitelyabsent")
+      .await
+      .is_none());
+  }
+
+  #[test]
+  fn smallest_image_url_prefers_narrowest() {
+    use rspotify::model::Image;
+    let images = vec![
+      Image {
+        height: Some(640),
+        url: "big".into(),
+        width: Some(640),
+      },
+      Image {
+        height: Some(64),
+        url: "small".into(),
+        width: Some(64),
+      },
+      Image {
+        height: Some(300),
+        url: "mid".into(),
+        width: Some(300),
+      },
+    ];
+    assert_eq!(smallest_image_url(&images).as_deref(), Some("small"));
+    assert_eq!(smallest_image_url(&[]), None);
+  }
+
+  /// Width is nullable in the API; unknown widths must not win the min().
+  #[test]
+  fn smallest_image_url_handles_null_width() {
+    use rspotify::model::Image;
+    let images = vec![
+      Image {
+        height: None,
+        url: "unknown".into(),
+        width: None,
+      },
+      Image {
+        height: Some(64),
+        url: "known".into(),
+        width: Some(64),
+      },
+    ];
+    assert_eq!(smallest_image_url(&images).as_deref(), Some("known"));
+  }
 }

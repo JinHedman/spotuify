@@ -54,6 +54,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
     &mut state.saved_shows_offset,
     visible,
     SCROLL_MARGIN,
+    state.saved_shows.len(),
   );
 
   let mut list_state = ListState::default();

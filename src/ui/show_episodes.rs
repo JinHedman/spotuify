@@ -69,6 +69,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
     &mut state.show_episodes_offset,
     visible,
     SCROLL_MARGIN,
+    state.show_episodes.len(),
   );
 
   let mut table_state = TableState::default();

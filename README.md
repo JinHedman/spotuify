@@ -17,6 +17,7 @@ Like `spotify-tui`, this only *controls* playback via the Spotify Web API. Audio
 
 - **Spotify Premium** — Connect playback control is Premium-only.
 - **An active Spotify Connect device** on your account (desktop app, phone, `spotifyd`, etc.). `spot` hands off to an existing device; it doesn't produce audio.
+- **ffmpeg** (optional) — only needed for playlist cover art. Without it the cover pane shows `(ffmpeg not found)` and everything else works normally. `brew install ffmpeg` / `apt install ffmpeg`.
 - **Your own Spotify developer app** — every user needs their own Client ID / Secret. Spotify does not allow sharing credentials. The first-run wizard walks you through this.
 
 ## Install / build
@@ -87,7 +88,10 @@ All keys except `Ctrl+C` are remappable via `config.yml` (see below).
 
 - **Authentication** — OAuth auth-code flow with cached token + automatic refresh.
 - **Playbar** — current track/episode, play/pause icon, volume, smooth extrapolated progress bar (moves between polls).
-- **Sidebar** — `Library` (fixed entries) + `Playlists` (your own playlists).
+- **Sidebar** — `Library` (fixed entries) + `Playlists` (your own playlists) + `Cover` art for the selected playlist.
+- **Playlist cover art** — the selected playlist's cover is drawn with half-block glyphs (two full-colour pixels per terminal cell, 24x24 px). Decoding is shelled out to ffmpeg, which fetches the image URL itself; no extra Spotify request is made. Needs enough sidebar height, otherwise the pane is dropped.
+- **Cover cache** — rendered covers are cached in memory for the session and on disk across runs, so ffmpeg runs once per distinct artwork rather than on every selection or restart. Cache lives in the OS cache directory (`~/Library/Caches/io.spotuify/covers` on macOS, `~/.cache/spotuify/covers` on Linux); each entry is under 2 KB. Entries are keyed by artwork, so changing a playlist's picture invalidates it automatically. Safe to delete at any time — it will simply be rebuilt.
+- **Owner filter** — by default only playlists you created are listed, because Spotify 403s track listings for anyone else's playlist (see "Known limitations"). The `Playlists` title reports how many were hidden. Set `behavior.only_own_playlists: false` to show them all again; `Enter` still starts playback on a followed playlist even though its listing fails.
 - **Library entries**
   - **Liked Songs** → saved tracks in TrackTable
   - **Albums** → saved-album list → Enter loads album tracks
@@ -123,6 +127,7 @@ Spotuify does not implement any of these. They are called out in [`PLAN.md`](./P
 
 Other Spotify-side limitations:
 
+- **`GET /playlists/{id}/items` returns 403** for apps without extended quota when the playlist isn't yours — so tracks of followed playlists can't be listed. Playback still works via Spotify Connect. This is why `behavior.only_own_playlists` defaults to `true`.
 - **Playlist folders** are not exposed by the Web API at all — they are a local-client feature. The playlist list is flat. This is a ~10-year standing request to Spotify.
 - **Local tracks** (imported MP3s) have no URI and can't be played via the Web API.
 
@@ -159,6 +164,7 @@ behavior:
   tick_rate_ms: 200           # UI redraw tick (governs progress-bar smoothness)
   volume_step: 10             # increment for +/-
   seek_step_ms: 5000          # increment for [/]
+  only_own_playlists: true    # hide playlists you follow but didn't create
 
 keybindings:
   # Each action accepts a single key or a list of keys.

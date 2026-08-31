@@ -73,6 +73,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
     &mut state.track_list_offset,
     visible,
     SCROLL_MARGIN,
+    state.track_list.len(),
   );
 
   let mut table_state = TableState::default();
