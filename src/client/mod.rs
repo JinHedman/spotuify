@@ -107,6 +107,28 @@ impl Network {
   }
 
   async fn dispatch(&self, event: IoEvent) -> Result<()> {
+    // Flag track-list fetches so the main pane can show progress. Set here
+    // rather than in each handler so there is a single list to keep correct,
+    // and cleared unconditionally below so a failed fetch cannot leave a
+    // spinner running forever.
+    let loads_track_list = matches!(
+      event,
+      IoEvent::GetPlaylistTracks { .. }
+        | IoEvent::GetAlbumTracks { .. }
+        | IoEvent::GetSavedTracks
+        | IoEvent::GetRecentlyPlayed
+    );
+    if loads_track_list {
+      self.state.lock().unwrap().track_list_loading = true;
+    }
+    let result = self.dispatch_inner(event).await;
+    if loads_track_list {
+      self.state.lock().unwrap().track_list_loading = false;
+    }
+    result
+  }
+
+  async fn dispatch_inner(&self, event: IoEvent) -> Result<()> {
     match event {
       // Unreachable in practice — `run` intercepts it before dispatching.
       IoEvent::Shutdown => Ok(()),
@@ -1475,6 +1497,50 @@ mod tests {
     let ((tr, _, tb), (br, _, bb)) = art.cells[last];
     assert!(tb > 200 && tr < 60, "top of last row should be blue");
     assert!(bb > 200 && br < 60, "bottom of last row should be blue");
+  }
+
+  fn test_network() -> (Network, Arc<Mutex<AppState>>) {
+    use crate::config::user::UserConfig;
+    use rspotify::{Credentials, OAuth};
+    let cfg = UserConfig::load_or_default(std::path::Path::new(
+      "/nonexistent/spotuify-test-config.yml",
+    ))
+    .unwrap();
+    let state = Arc::new(Mutex::new(AppState::new(Arc::new(cfg))));
+    let spotify = AuthCodeSpotify::new(Credentials::new("id", "secret"), OAuth::default());
+    (Network::new(spotify, Arc::clone(&state)), state)
+  }
+
+  /// A stuck spinner is worse than no spinner: it says work is happening when
+  /// nothing is. The flag must clear even when the fetch fails.
+  ///
+  /// Uses a malformed album id so `AlbumId::from_id` rejects it before any
+  /// HTTP happens — the test stays deterministic and offline.
+  #[tokio::test]
+  async fn track_list_loading_clears_when_the_fetch_fails() {
+    let (network, state) = test_network();
+    assert!(!state.lock().unwrap().track_list_loading, "starts clear");
+
+    let result = network
+      .dispatch(IoEvent::GetAlbumTracks {
+        album_id: "not a valid spotify id!".to_string(),
+        album_name: "x".to_string(),
+      })
+      .await;
+
+    assert!(result.is_err(), "malformed id must fail");
+    assert!(
+      !state.lock().unwrap().track_list_loading,
+      "flag must be cleared on the error path, or the spinner spins forever"
+    );
+  }
+
+  /// Events that do not populate the track list must not raise the flag.
+  #[tokio::test]
+  async fn non_track_list_events_leave_the_flag_alone() {
+    let (network, state) = test_network();
+    let _ = network.dispatch(IoEvent::Shutdown).await;
+    assert!(!state.lock().unwrap().track_list_loading);
   }
 
   /// The quit hang: `run` must return when handed the Shutdown sentinel.

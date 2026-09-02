@@ -16,12 +16,28 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
   } else {
     format!("Tracks — {}", state.track_list_title)
   };
+  // A fetch replaces the list only once it completes, so while switching from
+  // one playlist to another the previous tracks stay on screen. Marking the
+  // title covers that case, where an empty-state spinner never fires.
+  let title = if state.track_list_loading {
+    format!(
+      "{title}  {}",
+      crate::ui::spinner::frame(crate::ui::spinner::now_ms())
+    )
+  } else {
+    title
+  };
   let block = layout::block(&title, ActiveBlock::TrackTable, state.active_block, &theme);
 
   if state.track_list.is_empty() {
-    let placeholder =
-      Paragraph::new("Pick a playlist, search with /, or open Liked Songs.").block(block);
-    frame.render_widget(placeholder, area);
+    let placeholder = if state.track_list_loading {
+      // Paging a large playlist is many round trips; the idle hint below would
+      // otherwise sit there looking like nothing had happened.
+      Paragraph::new(crate::ui::spinner::line("loading tracks…", &theme))
+    } else {
+      Paragraph::new("Pick a playlist, search with /, or open Liked Songs.")
+    };
+    frame.render_widget(placeholder.block(block), area);
     return;
   }
 

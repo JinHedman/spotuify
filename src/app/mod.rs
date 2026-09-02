@@ -177,6 +177,10 @@ pub struct AppState {
   pub track_list_title: String,
   pub track_list_context_uri: Option<String>,
   pub track_list_index: usize,
+  /// True while a track-list fetch is in flight. Distinct from `is_loading`,
+  /// which tracks the playback poll and therefore flickers every
+  /// `poll_interval_ms` regardless of what the main pane is doing.
+  pub track_list_loading: bool,
   pub track_list_offset: usize,
 
   pub search_query: String,
@@ -255,6 +259,7 @@ impl AppState {
       track_list_title: String::new(),
       track_list_context_uri: None,
       track_list_index: 0,
+      track_list_loading: false,
       track_list_offset: 0,
       search_query: String::new(),
       search_results: SearchResults::default(),
