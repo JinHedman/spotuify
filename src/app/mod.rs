@@ -187,6 +187,8 @@ pub struct AppState {
   pub search_results: SearchResults,
   pub search_tab: SearchTab,
   pub has_searched: bool,
+  /// True while a search request is in flight.
+  pub search_loading: bool,
 
   pub devices: Vec<Device>,
   pub devices_index: usize,
@@ -265,6 +267,7 @@ impl AppState {
       search_results: SearchResults::default(),
       search_tab: SearchTab::Tracks,
       has_searched: false,
+      search_loading: false,
       devices: Vec::new(),
       devices_index: 0,
       saved_albums: Vec::new(),

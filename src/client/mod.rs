@@ -118,12 +118,21 @@ impl Network {
         | IoEvent::GetSavedTracks
         | IoEvent::GetRecentlyPlayed
     );
-    if loads_track_list {
-      self.state.lock().unwrap().track_list_loading = true;
+    let is_search = matches!(event, IoEvent::Search(_));
+    if loads_track_list || is_search {
+      let mut s = self.state.lock().unwrap();
+      s.track_list_loading |= loads_track_list;
+      s.search_loading |= is_search;
     }
     let result = self.dispatch_inner(event).await;
-    if loads_track_list {
-      self.state.lock().unwrap().track_list_loading = false;
+    if loads_track_list || is_search {
+      let mut s = self.state.lock().unwrap();
+      if loads_track_list {
+        s.track_list_loading = false;
+      }
+      if is_search {
+        s.search_loading = false;
+      }
     }
     result
   }
@@ -1532,6 +1541,25 @@ mod tests {
     assert!(
       !state.lock().unwrap().track_list_loading,
       "flag must be cleared on the error path, or the spinner spins forever"
+    );
+  }
+
+  /// Same stuck-spinner guarantee for search. `Search` with dummy credentials
+  /// fails without a token, and the flag must not survive that.
+  #[tokio::test]
+  async fn search_loading_clears_when_the_search_fails() {
+    let (network, state) = test_network();
+    let result = tokio::time::timeout(
+      Duration::from_secs(20),
+      network.dispatch(IoEvent::Search("anything".to_string())),
+    )
+    .await;
+
+    // Whether it failed fast or was refused by Spotify, the flag must be down.
+    assert!(result.is_ok(), "dispatch should return, not hang");
+    assert!(
+      !state.lock().unwrap().search_loading,
+      "flag must be cleared however the search ended"
     );
   }
 
