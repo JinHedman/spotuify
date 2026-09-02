@@ -51,6 +51,9 @@ const COVER_HEIGHT: u16 = COVER_ROWS + 2;
 pub fn draw(frame: &mut Frame, state: &Arc<Mutex<AppState>>) {
   let area = frame.area();
   let mut state = state.lock().unwrap();
+  // Advance any in-flight theme fade first, so this frame paints the current
+  // blend rather than the previous one.
+  state.tick_theme();
 
   if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
     too_small::draw(frame, area, &state.theme);

@@ -115,6 +115,7 @@ All keys except `Ctrl+C` are remappable via `config.yml` (see below).
 - **Help overlay, Legend bar, error line** — visible affordances.
 - **Responsive layout** — sidebar auto-collapses below ~110 columns; basic playbar-only view when the terminal is very short; a "terminal too small" placeholder below 60×10.
 - **Configurable theme + keybindings** via `$CONFIG_DIR/spotuify/config.yml` (see "Config" below). A few ready-made palettes live in [`themes/`](./themes/).
+- **Theme fades** — theme changes blend over `behavior.theme_transition_ms` (350ms default, 0 to disable) instead of snapping, and the UI redraws at ~30fps for the duration so the blend reads as motion rather than two steps. Only blends between hex colours: named colours like `DarkGray` belong to your terminal palette, so interpolating them would substitute a guess for your configured colour — those snap at the midpoint instead.
 - **Live theme picker** — press `t` to preview built-in presets on the fly (Spotify Green, Gruvbox Dark, Solarized Dark, Nord, Monokai). Enter applies and persists (writes `$CONFIG_DIR/spotuify/.selected_theme`, which is re-applied on next launch). Esc reverts. Delete `.selected_theme` to go back to your `config.yml` theme, or copy the matching `themes/*.yml` into `config.yml` for a config-tracked change.
 
 ### Known limitations (not our fault)
@@ -170,6 +171,7 @@ behavior:
   volume_step: 10             # increment for +/-
   seek_step_ms: 5000          # increment for [/]
   only_own_playlists: true    # hide playlists you follow but didn't create
+  theme_transition_ms: 350    # theme fade duration; 0 to snap instantly
 
 keybindings:
   # Each action accepts a single key or a list of keys.

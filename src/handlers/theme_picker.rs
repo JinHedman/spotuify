@@ -5,6 +5,7 @@ use crate::config::presets::PRESETS;
 use crate::config::selected_theme_path;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::Mutex;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -18,7 +19,8 @@ pub(super) async fn handle(
   if keys.quit.matches(&key) || keys.back.matches(&key) {
     let mut s = state.lock().unwrap();
     if let Some(saved) = s.theme_before_preview.take() {
-      s.theme = saved;
+      // Snap on cancel: fading back would read as the app undoing itself.
+      s.set_theme_immediate(saved);
     }
     s.pop_block();
     return;
@@ -45,25 +47,33 @@ pub(super) async fn handle(
   if keys.move_down.matches(&key) {
     let mut s = state.lock().unwrap();
     s.theme_picker_index = (s.theme_picker_index + 1).min(PRESETS.len().saturating_sub(1));
-    s.theme = PRESETS[s.theme_picker_index].theme();
+    let target = PRESETS[s.theme_picker_index].theme();
+    let ms = s.config.behavior.theme_transition_ms;
+    s.set_theme(target, Duration::from_millis(ms));
     return;
   }
   if keys.move_up.matches(&key) {
     let mut s = state.lock().unwrap();
     s.theme_picker_index = s.theme_picker_index.saturating_sub(1);
-    s.theme = PRESETS[s.theme_picker_index].theme();
+    let target = PRESETS[s.theme_picker_index].theme();
+    let ms = s.config.behavior.theme_transition_ms;
+    s.set_theme(target, Duration::from_millis(ms));
     return;
   }
   if keys.move_top.matches(&key) {
     let mut s = state.lock().unwrap();
     s.theme_picker_index = 0;
-    s.theme = PRESETS[s.theme_picker_index].theme();
+    let target = PRESETS[s.theme_picker_index].theme();
+    let ms = s.config.behavior.theme_transition_ms;
+    s.set_theme(target, Duration::from_millis(ms));
     return;
   }
   if keys.move_bottom.matches(&key) {
     let mut s = state.lock().unwrap();
     s.theme_picker_index = PRESETS.len().saturating_sub(1);
-    s.theme = PRESETS[s.theme_picker_index].theme();
+    let target = PRESETS[s.theme_picker_index].theme();
+    let ms = s.config.behavior.theme_transition_ms;
+    s.set_theme(target, Duration::from_millis(ms));
   }
 }
 

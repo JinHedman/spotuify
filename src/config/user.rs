@@ -11,6 +11,11 @@ pub struct Behavior {
   pub tick_rate_ms: u64,
   pub volume_step: u8,
   pub seek_step_ms: i64,
+  /// How long a theme change takes to fade, in milliseconds. 0 snaps.
+  ///
+  /// Only blends between RGB colours — named colours belong to the terminal
+  /// palette and snap at the midpoint instead. See `config::theme::blend`.
+  pub theme_transition_ms: u64,
   /// Hide playlists you follow but did not create.
   ///
   /// Spotify's Feb 2026 restriction on `/playlists/{id}/items` means apps
@@ -28,6 +33,7 @@ impl Default for Behavior {
       tick_rate_ms: 200,
       volume_step: 10,
       seek_step_ms: 5000,
+      theme_transition_ms: 350,
       only_own_playlists: true,
     }
   }

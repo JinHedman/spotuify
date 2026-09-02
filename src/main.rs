@@ -34,6 +34,10 @@ const BANNER: &str = r"
   Terminal client for Spotify
 ";
 
+/// Redraw interval while a theme fade is in flight — roughly 30fps, enough
+/// for a blend to read as continuous motion.
+const TRANSITION_FRAME_MS: u64 = 33;
+
 /// How long to wait for the network task to drain after the terminal has been
 /// restored, before giving up and exiting anyway.
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(1500);
@@ -70,7 +74,7 @@ async fn main() -> Result<()> {
   if let Ok(path) = selected_theme_path() {
     if let Ok(raw) = std::fs::read_to_string(&path) {
       if let Some(preset) = presets::find_by_name(raw.trim()) {
-        state.lock().unwrap().theme = preset.theme();
+        state.lock().unwrap().set_theme_immediate(preset.theme());
       }
     }
   }
@@ -121,14 +125,22 @@ async fn run(
   let mut events = EventStream::new();
   let mut poll = time::interval(Duration::from_millis(user_cfg.behavior.poll_interval_ms));
   poll.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-  let mut redraw = time::interval(Duration::from_millis(user_cfg.behavior.tick_rate_ms));
-  redraw.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-
   loop {
     terminal.draw(|f| ui::draw(f, &state))?;
 
+    // Redraw faster while a theme fade is running. At the default 200ms tick
+    // a 350ms fade would paint two intermediate frames, which reads as a
+    // stutter rather than a transition. Reverts to the configured tick as
+    // soon as the fade finishes, so the idle cost is unchanged.
+    let fading = { state.lock().unwrap().theme_transition_active() };
+    let redraw_in = if fading {
+      Duration::from_millis(TRANSITION_FRAME_MS)
+    } else {
+      Duration::from_millis(user_cfg.behavior.tick_rate_ms)
+    };
+
     tokio::select! {
-      _ = redraw.tick() => {}
+      _ = time::sleep(redraw_in) => {}
       _ = poll.tick() => {
         let _ = io_tx.send(IoEvent::GetCurrentPlayback).await;
       }

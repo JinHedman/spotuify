@@ -16,7 +16,7 @@ use rspotify::model::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub const LIBRARY_ENTRIES: [&str; 5] = [
   "Liked Songs",
@@ -25,6 +25,19 @@ pub const LIBRARY_ENTRIES: [&str; 5] = [
   "Podcasts",
   "Recently Played",
 ];
+
+/// A fade from one theme to another.
+///
+/// Every theme change routes through `AppState::set_theme`, so sources added
+/// later — album art, decade palettes, time-of-day — inherit fading without
+/// touching this.
+#[derive(Debug, Clone, Copy)]
+pub struct ThemeTransition {
+  from: Theme,
+  to: Theme,
+  started: Instant,
+  duration: Duration,
+}
 
 /// Cover art is drawn with the upper-half-block glyph: each terminal cell
 /// carries two independently coloured pixels (foreground = top, background =
@@ -144,6 +157,9 @@ pub struct AppState {
   pub theme: Theme,
   /// Saved theme so the picker can revert on cancel.
   pub theme_before_preview: Option<Theme>,
+  /// In-flight fade, if any. `theme` above is the *rendered* result; this is
+  /// what it is moving toward.
+  pub theme_transition: Option<ThemeTransition>,
   pub theme_picker_index: usize,
 
   pub playback: Option<CurrentPlaybackContext>,
@@ -242,6 +258,7 @@ impl AppState {
       config,
       theme,
       theme_before_preview: None,
+      theme_transition: None,
       theme_picker_index: 0,
       playback: None,
       playback_received_at: None,
@@ -304,6 +321,57 @@ impl AppState {
       .and_then(|p| p.device.volume_percent)
       .map(|v| v.min(100) as u8)
       .unwrap_or(0)
+  }
+
+  /// Begin fading to `target`. Called by every theme source.
+  ///
+  /// A change mid-fade starts the next one from whatever is on screen right
+  /// now, not from the previous target, so rapid changes chase smoothly
+  /// instead of jumping back.
+  pub fn set_theme(&mut self, target: Theme, duration: Duration) {
+    if duration.is_zero() || self.theme == target {
+      self.theme = target;
+      self.theme_transition = None;
+      return;
+    }
+    self.theme_transition = Some(ThemeTransition {
+      from: self.theme,
+      to: target,
+      started: Instant::now(),
+      duration,
+    });
+  }
+
+  /// Apply a theme with no fade — startup, and cancelling a preview, where
+  /// animating from an unrelated palette would look like a glitch.
+  pub fn set_theme_immediate(&mut self, target: Theme) {
+    self.theme = target;
+    self.theme_transition = None;
+  }
+
+  /// Advance the fade. Called once per draw, so the rendered theme is always
+  /// current for the frame about to be painted.
+  pub fn tick_theme(&mut self) {
+    let Some(t) = self.theme_transition else {
+      return;
+    };
+    let elapsed = t.started.elapsed();
+    if elapsed >= t.duration {
+      self.theme = t.to;
+      self.theme_transition = None;
+      return;
+    }
+    let linear = elapsed.as_secs_f32() / t.duration.as_secs_f32();
+    // Ease-out: fast to start, settling at the end. A linear fade reads as a
+    // mechanical wipe; this reads as the UI arriving somewhere.
+    let eased = 1.0 - (1.0 - linear) * (1.0 - linear);
+    self.theme = t.from.blend(t.to, eased);
+  }
+
+  /// Whether a fade is running. The main loop redraws faster while one is, so
+  /// it does not render as three discrete steps.
+  pub fn theme_transition_active(&self) -> bool {
+    self.theme_transition.is_some()
   }
 
   pub fn is_playing(&self) -> bool {
@@ -399,5 +467,102 @@ impl AppState {
     } else {
       false
     }
+  }
+}
+
+#[cfg(test)]
+mod theme_transition_tests {
+  use super::*;
+  use crate::config::theme::ThemeCfg;
+  use crate::config::user::UserConfig;
+  use ratatui::style::Color;
+
+  fn state() -> AppState {
+    let cfg = UserConfig::load_or_default(std::path::Path::new(
+      "/nonexistent/spotuify-test-config.yml",
+    ))
+    .unwrap();
+    AppState::new(Arc::new(cfg))
+  }
+
+  fn rgb_theme(v: u8) -> Theme {
+    let base = Theme::from(&ThemeCfg::default());
+    Theme {
+      active: Color::Rgb(v, v, v),
+      progress: Color::Rgb(v, v, v),
+      ..base
+    }
+  }
+
+  #[test]
+  fn zero_duration_snaps_and_starts_no_transition() {
+    let mut s = state();
+    let target = rgb_theme(200);
+    s.set_theme(target, Duration::ZERO);
+    assert_eq!(s.theme.active, target.active);
+    assert!(!s.theme_transition_active(), "nothing left running");
+  }
+
+  /// Setting the theme it already has must not start a fade — otherwise the
+  /// main loop would spin at 30fps for no visible reason.
+  #[test]
+  fn setting_the_current_theme_is_a_no_op() {
+    let mut s = state();
+    let same = s.theme;
+    s.set_theme(same, Duration::from_millis(350));
+    assert!(!s.theme_transition_active());
+  }
+
+  #[test]
+  fn transition_completes_and_lands_exactly_on_the_target() {
+    let mut s = state();
+    s.set_theme_immediate(rgb_theme(0));
+    let target = rgb_theme(255);
+    s.set_theme(target, Duration::from_millis(20));
+    assert!(s.theme_transition_active(), "fade started");
+
+    std::thread::sleep(Duration::from_millis(40));
+    s.tick_theme();
+
+    assert_eq!(s.theme.active, target.active, "ends on the target exactly");
+    assert!(!s.theme_transition_active(), "and clears itself");
+  }
+
+  /// A fade interrupted mid-flight must continue from what is on screen, not
+  /// from the previous start colour — otherwise rapid picker presses jump
+  /// backwards before moving on.
+  #[test]
+  fn interrupting_a_fade_starts_from_the_rendered_colour() {
+    let mut s = state();
+    s.set_theme_immediate(rgb_theme(0));
+    s.set_theme(rgb_theme(255), Duration::from_millis(200));
+
+    std::thread::sleep(Duration::from_millis(60));
+    s.tick_theme();
+    let midway = s.theme.active;
+    assert_ne!(midway, Color::Rgb(0, 0, 0), "actually moved");
+    assert_ne!(midway, Color::Rgb(255, 255, 255), "but not finished");
+
+    // Redirect to a third theme.
+    s.set_theme(rgb_theme(64), Duration::from_millis(200));
+    s.tick_theme();
+    // The new fade's start point is where the screen already was.
+    let Some(t) = s.theme_transition else {
+      panic!("expected an active transition");
+    };
+    assert_eq!(t.from, midway_theme(midway, &s), "resumes from the screen");
+  }
+
+  fn midway_theme(active: Color, s: &AppState) -> Theme {
+    Theme { active, ..s.theme }
+  }
+
+  /// tick_theme with nothing running must not touch the theme.
+  #[test]
+  fn tick_without_a_transition_is_inert() {
+    let mut s = state();
+    let before = s.theme;
+    s.tick_theme();
+    assert_eq!(s.theme, before);
   }
 }
