@@ -50,18 +50,47 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
   ])
   .style(Style::default().fg(theme.hint).add_modifier(Modifier::BOLD));
 
+  // Matched on URI rather than on list position, because Spotify reports what
+  // is playing but not where in the context it sits. Consequence: a track
+  // appearing twice in a playlist marks both rows. That is not fixable from
+  // the API, and showing both is more honest than guessing one.
+  //
+  // Deliberately not requiring the context to match as well: Liked Songs,
+  // search results and Recently Played set no `track_list_context_uri`, so a
+  // context check would hide the marker in exactly the views that most need
+  // it. The claim here is "this is the song that's playing", not "playback is
+  // running from this list".
+  let playing_uri = state.playing_uri();
+  let is_playing = state.is_playing();
+  let anim_ms = crate::ui::spinner::now_ms();
+
   let rows: Vec<Row> = state
     .track_list
     .iter()
     .enumerate()
     .map(|(i, t)| {
-      Row::new(vec![
-        Cell::from(format!("{:>3}", i + 1)),
+      let current = crate::ui::nowplaying::is_current(t.uri.as_deref(), playing_uri.as_deref());
+      let gutter = if current {
+        crate::ui::nowplaying::glyph(anim_ms, is_playing).to_string()
+      } else {
+        // Same width as the glyph, so the column does not shift when the
+        // marker appears or moves.
+        format!("{:>width$}", i + 1, width = crate::ui::nowplaying::WIDTH)
+      };
+      let row = Row::new(vec![
+        Cell::from(gutter),
         Cell::from(t.name.clone()),
         Cell::from(t.artists.clone()),
         Cell::from(t.album.clone()),
         Cell::from(format_ms(t.duration_ms)),
-      ])
+      ]);
+      if current {
+        // Foreground only, so it composes with the selection background when
+        // the playing row also happens to be selected.
+        row.style(Style::default().fg(theme.playing_icon))
+      } else {
+        row
+      }
     })
     .collect();
 

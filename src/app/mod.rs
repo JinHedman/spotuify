@@ -335,6 +335,21 @@ impl AppState {
     Some(base + elapsed)
   }
 
+  /// URI of whatever is playing — track or episode.
+  ///
+  /// Returns None for anything without a URI (local files, unrecognised
+  /// items). Callers comparing against `TrackRow::uri`, which is also
+  /// optional, must check this is `Some` first: two `None`s compare equal and
+  /// would mark every unplayable row as playing.
+  pub fn playing_uri(&self) -> Option<String> {
+    use rspotify::prelude::Id;
+    self.playback.as_ref().and_then(|p| match p.item.as_ref()? {
+      PlayableItem::Track(t) => t.id.as_ref().map(|id| id.uri()),
+      PlayableItem::Episode(e) => Some(e.id.uri()),
+      PlayableItem::Unknown(_) => None,
+    })
+  }
+
   pub fn current_track_id(&self) -> Option<String> {
     use rspotify::prelude::Id;
     self.playback.as_ref().and_then(|p| match p.item.as_ref()? {

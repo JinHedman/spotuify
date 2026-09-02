@@ -106,6 +106,7 @@ All keys except `Ctrl+C` are remappable via `config.yml` (see below).
 - **Device selector** — `d` lists your Spotify Connect devices. `Enter` transfers playback.
 - **Playback control** — play/pause, next/prev, seek, volume, shuffle (`z`), repeat (`R`).
 - **Shuffle / repeat indicators** — shown on the playbar timeline row: `⇄` for shuffle, `↻` for repeat-all, `↻1` for repeat-one. Dim when off. Worth knowing that `n` / `p` follow Spotify's queue, so with shuffle on they jump to a random track — the indicator is there to make that visible rather than surprising.
+- **Now-playing marker** — the row holding the current track or episode is tinted and its row number replaced by a three-bar equalizer, animated while playing and flat when paused. Shown in the track table and the episode list. Matched by URI, so a track appearing twice in a playlist marks both rows — Spotify reports what is playing but not where in the context it sits, so this is not resolvable.
 - **Smooth progress bar** — sub-cell resolution via unicode eighth-blocks, so the extrapolated progress actually shows as smooth motion.
 - **Save toggle** — `s` toggles save/unsave for the currently-playing track, `S` for the current album, `f` for the current artist.
 - **Remove playlist** — `D` on a highlighted playlist opens a confirmation dialog; confirming unfollows it (which deletes your own playlists).

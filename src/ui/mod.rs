@@ -7,6 +7,7 @@ pub mod help;
 pub mod layout;
 pub mod legend;
 pub mod library;
+pub mod nowplaying;
 pub mod playbar;
 pub mod playlist_cover;
 pub mod playlists;

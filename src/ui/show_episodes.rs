@@ -38,15 +38,36 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
   ])
   .style(Style::default().fg(theme.hint).add_modifier(Modifier::BOLD));
 
+  // No index column here to borrow, so the gutter is reserved inside the
+  // Episode cell — for every row, not just the marked one, so the text never
+  // shifts as the marker appears or moves.
+  const GUTTER: usize = crate::ui::nowplaying::WIDTH + 1;
+  let playing_uri = state.playing_uri();
+  let is_playing = state.is_playing();
+  let anim_ms = crate::ui::spinner::now_ms();
+
   let rows: Vec<Row> = state
     .show_episodes
     .iter()
     .map(|e| {
-      Row::new(vec![
+      use rspotify::prelude::Id;
+      let uri = e.id.uri();
+      let current = crate::ui::nowplaying::is_current(Some(uri.as_str()), playing_uri.as_deref());
+      let prefix = if current {
+        format!("{} ", crate::ui::nowplaying::glyph(anim_ms, is_playing))
+      } else {
+        " ".repeat(GUTTER)
+      };
+      let row = Row::new(vec![
         Cell::from(e.release_date.clone()),
-        Cell::from(e.name.clone()),
+        Cell::from(format!("{prefix}{}", e.name)),
         Cell::from(format_ms(e.duration.num_milliseconds().max(0) as u64)),
-      ])
+      ]);
+      if current {
+        row.style(Style::default().fg(theme.playing_icon))
+      } else {
+        row
+      }
     })
     .collect();
 
