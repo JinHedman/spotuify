@@ -211,9 +211,17 @@ pub async fn handle_key(
     s.theme_before_preview = Some(s.theme);
     // Default the cursor to whichever preset matches the current theme, so
     // the cancel/revert path is a no-op for users already on a preset.
-    s.theme_picker_index = crate::config::presets::PRESETS
+    // Land on the entry matching the active source: the auto entry when it is
+    // driving, otherwise whichever fixed palette is in use.
+    use crate::config::presets::{PresetKind, PRESETS};
+    let mode = s.theme_mode;
+    let fixed = s.theme_fixed;
+    s.theme_picker_index = PRESETS
       .iter()
-      .position(|p| p.theme() == s.theme)
+      .position(|p| match mode {
+        crate::app::ThemeMode::DecadeAuto => p.kind == PresetKind::DecadeAuto,
+        crate::app::ThemeMode::Fixed => p.theme() == Some(fixed),
+      })
       .unwrap_or(0);
     s.push_block(ActiveBlock::ThemePicker);
     return KeyOutcome::Continue;

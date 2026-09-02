@@ -1,0 +1,10 @@
+# 1990s — muted teal and maroon.
+theme:
+  active:       "#4a9e8f"
+  inactive:     "#4a4a4a"
+  selected_bg:  "#2a2f2e"
+  text:         Reset
+  hint:         "#6f7a78"
+  error:        "#a33a3a"
+  progress:     "#5fb3a1"
+  playing_icon: "#7fcbb8"

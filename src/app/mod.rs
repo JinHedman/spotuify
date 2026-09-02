@@ -26,6 +26,15 @@ pub const LIBRARY_ENTRIES: [&str; 5] = [
   "Recently Played",
 ];
 
+/// Where the active theme comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeMode {
+  /// A single palette, chosen by the user.
+  Fixed,
+  /// Follows the release decade of whatever is playing.
+  DecadeAuto,
+}
+
 /// A fade from one theme to another.
 ///
 /// Every theme change routes through `AppState::set_theme`, so sources added
@@ -107,6 +116,17 @@ impl TrackRow {
   }
 }
 
+/// Year from a Spotify release date, which may be "2020", "2020-05" or
+/// "2020-05-12" depending on `release_date_precision`.
+///
+/// `str::get` returns None on a non-char-boundary rather than panicking, so a
+/// malformed value is simply rejected. The range check discards nonsense that
+/// would otherwise clamp to an end palette and look deliberate.
+fn parse_release_year(raw: &str) -> Option<u16> {
+  let year: u16 = raw.get(..4)?.parse().ok()?;
+  (1000..=2999).contains(&year).then_some(year)
+}
+
 fn join_artist_names<'a, I: Iterator<Item = &'a str>>(iter: I) -> String {
   iter.collect::<Vec<_>>().join(", ")
 }
@@ -157,6 +177,11 @@ pub struct AppState {
   pub theme: Theme,
   /// Saved theme so the picker can revert on cancel.
   pub theme_before_preview: Option<Theme>,
+  /// Which source decides the theme.
+  pub theme_mode: ThemeMode,
+  /// The chosen fixed palette. Used directly in `Fixed` mode, and as the
+  /// fallback in `DecadeAuto` when a track's year is unknown.
+  pub theme_fixed: Theme,
   /// In-flight fade, if any. `theme` above is the *rendered* result; this is
   /// what it is moving toward.
   pub theme_transition: Option<ThemeTransition>,
@@ -257,6 +282,8 @@ impl AppState {
     Self {
       config,
       theme,
+      theme_mode: ThemeMode::Fixed,
+      theme_fixed: theme,
       theme_before_preview: None,
       theme_transition: None,
       theme_picker_index: 0,
@@ -321,6 +348,73 @@ impl AppState {
       .and_then(|p| p.device.volume_percent)
       .map(|v| v.min(100) as u8)
       .unwrap_or(0)
+  }
+
+  /// Point the theme at preset `index`, fading over `duration`.
+  ///
+  /// The single entry point for choosing a theme, so mode and palette can
+  /// never disagree. Selecting `DecadeAuto` leaves `theme_fixed` alone on
+  /// purpose — it stays the fallback for tracks with no usable release date.
+  pub fn select_preset(&mut self, index: usize, duration: Duration) {
+    use crate::config::presets::{PresetKind, PRESETS};
+    let Some(preset) = PRESETS.get(index) else {
+      return;
+    };
+    match preset.kind {
+      PresetKind::Fixed => {
+        self.theme_mode = ThemeMode::Fixed;
+        if let Some(t) = preset.theme() {
+          self.theme_fixed = t;
+        }
+      }
+      PresetKind::DecadeAuto => self.theme_mode = ThemeMode::DecadeAuto,
+    }
+    self.apply_theme_source(duration);
+  }
+
+  /// Recompute the target from the active source and fade toward it.
+  ///
+  /// Called once per frame. `set_theme` is a no-op when the target already
+  /// matches, so in `Fixed` mode this costs a comparison and in `DecadeAuto`
+  /// it costs a short string parse — and a track change into a different
+  /// decade starts a fade on its own without anything having to notify us.
+  pub fn apply_theme_source(&mut self, duration: Duration) {
+    let target = match self.theme_mode {
+      ThemeMode::Fixed => self.theme_fixed,
+      ThemeMode::DecadeAuto => self.decade_theme().unwrap_or(self.theme_fixed),
+    };
+    self.set_theme(target, duration);
+  }
+
+  /// Label of the decade currently in effect, e.g. "1980s". None when the
+  /// playing track's year is unknown, or nothing is playing.
+  pub fn decade_label(&self) -> Option<&'static str> {
+    let year = self.playing_release_year()?;
+    Some(crate::config::presets::palette_for_year(year).label)
+  }
+
+  /// Palette for the playing track's decade, if its year can be determined.
+  pub fn decade_theme(&self) -> Option<Theme> {
+    let year = self.playing_release_year()?;
+    Some(crate::config::presets::palette_for_year(year).theme())
+  }
+
+  /// Release year of whatever is playing.
+  pub fn playing_release_year(&self) -> Option<u16> {
+    let item = self.playback.as_ref()?.item.as_ref()?;
+    let raw = match item {
+      PlayableItem::Track(t) => t.album.release_date.clone(),
+      PlayableItem::Episode(e) => Some(e.release_date.clone()),
+      // Same lesson as `playing_uri`: the untagged fallback is reached in
+      // practice, and giving up here would mean decade mode silently never
+      // engaging for exactly those tracks.
+      PlayableItem::Unknown(json) => json
+        .get("album")
+        .and_then(|a| a.get("release_date"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string),
+    };
+    parse_release_year(raw.as_deref()?)
   }
 
   /// Begin fading to `target`. Called by every theme source.
@@ -492,6 +586,116 @@ mod theme_transition_tests {
       progress: Color::Rgb(v, v, v),
       ..base
     }
+  }
+
+  #[test]
+  fn release_year_accepts_every_spotify_precision() {
+    // release_date_precision is year, month or day.
+    assert_eq!(parse_release_year("1984"), Some(1984));
+    assert_eq!(parse_release_year("1984-05"), Some(1984));
+    assert_eq!(parse_release_year("1984-05-12"), Some(1984));
+  }
+
+  #[test]
+  fn release_year_rejects_junk_without_panicking() {
+    for bad in ["", "abc", "20", "20x4", "not-a-date", "0001", "9999"] {
+      assert_eq!(parse_release_year(bad), None, "{bad:?} must be rejected");
+    }
+    // Multi-byte input: str::get must refuse the split, not panic.
+    assert_eq!(parse_release_year("😀😀😀😀"), None);
+    assert_eq!(parse_release_year("19😀4"), None);
+  }
+
+  #[test]
+  fn decade_mode_falls_back_when_nothing_is_playing() {
+    let mut s = state();
+    let fallback = rgb_theme(77);
+    s.set_theme_immediate(fallback);
+    s.theme_fixed = fallback;
+    s.theme_mode = ThemeMode::DecadeAuto;
+
+    assert!(s.decade_theme().is_none(), "no playback, no decade");
+    s.apply_theme_source(Duration::ZERO);
+    assert_eq!(s.theme.active, fallback.active, "keeps the chosen theme");
+  }
+
+  /// The lesson from the now-playing marker: `PlayableItem` is untagged with
+  /// an Unknown fallback that is reached in practice. Decade mode has to read
+  /// the raw JSON too, or it silently never engages for those tracks.
+  #[test]
+  fn decade_resolves_from_an_unparsed_playback_item() {
+    let mut s = state();
+    let raw = serde_json::json!({
+      "device": {
+        "id": "d", "is_active": true, "is_private_session": false,
+        "is_restricted": false, "name": "T", "type": "Computer",
+        "volume_percent": 10
+      },
+      "repeat_state": "off", "shuffle_state": false, "context": null,
+      "timestamp": 1_767_225_600_000i64, "progress_ms": 0, "is_playing": true,
+      "currently_playing_type": "track", "actions": { "disallows": {} },
+      "item": {
+        "name": "X", "uri": "spotify:track:x",
+        "album": { "release_date": "1987-03-01" }
+      }
+    });
+    let playback: rspotify::model::CurrentPlaybackContext =
+      serde_json::from_value(raw).expect("must parse via the Unknown fallback");
+    assert!(
+      playback.item.as_ref().unwrap().is_unknown(),
+      "must be Unknown"
+    );
+    s.playback = Some(playback);
+
+    assert_eq!(s.playing_release_year(), Some(1987));
+    assert_eq!(s.decade_label(), Some("1980s"));
+    assert!(s.decade_theme().is_some());
+  }
+
+  /// Selecting a fixed palette after auto must leave auto behind entirely.
+  #[test]
+  fn selecting_a_fixed_preset_leaves_decade_mode() {
+    use crate::config::presets::{PresetKind, PRESETS};
+    let mut s = state();
+    let auto = PRESETS
+      .iter()
+      .position(|p| p.kind == PresetKind::DecadeAuto)
+      .expect("an auto preset must exist");
+    s.select_preset(auto, Duration::ZERO);
+    assert_eq!(s.theme_mode, ThemeMode::DecadeAuto);
+
+    s.select_preset(0, Duration::ZERO);
+    assert_eq!(s.theme_mode, ThemeMode::Fixed);
+    assert_eq!(
+      s.theme_fixed.active,
+      PRESETS[0].theme().unwrap().active,
+      "fixed palette applied"
+    );
+  }
+
+  /// Choosing auto must not overwrite the fallback, or an unknown-year track
+  /// would land on whatever palette happened to precede it.
+  #[test]
+  fn choosing_auto_preserves_the_fallback_palette() {
+    use crate::config::presets::{PresetKind, PRESETS};
+    let mut s = state();
+    s.select_preset(1, Duration::ZERO);
+    let fallback = s.theme_fixed;
+
+    let auto = PRESETS
+      .iter()
+      .position(|p| p.kind == PresetKind::DecadeAuto)
+      .unwrap();
+    s.select_preset(auto, Duration::ZERO);
+    assert_eq!(s.theme_fixed, fallback, "fallback untouched");
+  }
+
+  #[test]
+  fn out_of_range_preset_index_is_ignored() {
+    let mut s = state();
+    let before = s.theme_mode;
+    s.select_preset(9999, Duration::ZERO);
+    assert_eq!(s.theme_mode, before);
   }
 
   #[test]

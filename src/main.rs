@@ -73,8 +73,11 @@ async fn main() -> Result<()> {
   // silently ignored; the built-in default stays in place.
   if let Ok(path) = selected_theme_path() {
     if let Ok(raw) = std::fs::read_to_string(&path) {
-      if let Some(preset) = presets::find_by_name(raw.trim()) {
-        state.lock().unwrap().set_theme_immediate(preset.theme());
+      // By index, so a persisted "Decade" choice restores the mode and not
+      // just a palette. Zero duration: fading in from the built-in default at
+      // startup would look like a glitch.
+      if let Some(index) = presets::index_by_name(raw.trim()) {
+        state.lock().unwrap().select_preset(index, Duration::ZERO);
       }
     }
   }

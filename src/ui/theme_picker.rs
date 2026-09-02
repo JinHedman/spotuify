@@ -1,5 +1,5 @@
 use crate::app::AppState;
-use crate::config::presets::PRESETS;
+use crate::config::presets::{PresetKind, PRESETS};
 use ratatui::{
   layout::{Alignment, Constraint, Direction, Layout, Rect},
   style::{Modifier, Style},
@@ -37,11 +37,24 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     .iter()
     .map(|p| {
       // Small color swatch in the active color of each preset, so you get a
-      // preview of each accent before you commit.
-      let swatch_color = p.theme().active;
+      // preview of each accent before you commit. The auto entry has no
+      // palette of its own, so it shows whatever it resolves to right now.
+      let swatch_color = p
+        .theme()
+        .map(|t| t.active)
+        .or_else(|| state.decade_theme().map(|t| t.active))
+        .unwrap_or(theme.active);
+      // Tell the auto entry what it currently resolves to, so its swatch
+      // colour is explained rather than mysterious.
+      let suffix = match (p.kind, state.decade_label()) {
+        (PresetKind::DecadeAuto, Some(label)) => format!("  {label}"),
+        (PresetKind::DecadeAuto, None) => "  (no year)".to_string(),
+        _ => String::new(),
+      };
       ListItem::new(Line::from(vec![
         Span::styled("● ", Style::default().fg(swatch_color)),
         Span::raw(p.name),
+        Span::styled(suffix, Style::default().fg(theme.hint)),
       ]))
     })
     .collect();

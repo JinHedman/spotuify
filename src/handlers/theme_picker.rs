@@ -47,33 +47,29 @@ pub(super) async fn handle(
   if keys.move_down.matches(&key) {
     let mut s = state.lock().unwrap();
     s.theme_picker_index = (s.theme_picker_index + 1).min(PRESETS.len().saturating_sub(1));
-    let target = PRESETS[s.theme_picker_index].theme();
-    let ms = s.config.behavior.theme_transition_ms;
-    s.set_theme(target, Duration::from_millis(ms));
+    let (index, ms) = (s.theme_picker_index, s.config.behavior.theme_transition_ms);
+    s.select_preset(index, Duration::from_millis(ms));
     return;
   }
   if keys.move_up.matches(&key) {
     let mut s = state.lock().unwrap();
     s.theme_picker_index = s.theme_picker_index.saturating_sub(1);
-    let target = PRESETS[s.theme_picker_index].theme();
-    let ms = s.config.behavior.theme_transition_ms;
-    s.set_theme(target, Duration::from_millis(ms));
+    let (index, ms) = (s.theme_picker_index, s.config.behavior.theme_transition_ms);
+    s.select_preset(index, Duration::from_millis(ms));
     return;
   }
   if keys.move_top.matches(&key) {
     let mut s = state.lock().unwrap();
     s.theme_picker_index = 0;
-    let target = PRESETS[s.theme_picker_index].theme();
-    let ms = s.config.behavior.theme_transition_ms;
-    s.set_theme(target, Duration::from_millis(ms));
+    let (index, ms) = (s.theme_picker_index, s.config.behavior.theme_transition_ms);
+    s.select_preset(index, Duration::from_millis(ms));
     return;
   }
   if keys.move_bottom.matches(&key) {
     let mut s = state.lock().unwrap();
     s.theme_picker_index = PRESETS.len().saturating_sub(1);
-    let target = PRESETS[s.theme_picker_index].theme();
-    let ms = s.config.behavior.theme_transition_ms;
-    s.set_theme(target, Duration::from_millis(ms));
+    let (index, ms) = (s.theme_picker_index, s.config.behavior.theme_transition_ms);
+    s.select_preset(index, Duration::from_millis(ms));
   }
 }
 

@@ -1,0 +1,10 @@
+# 2010s — flat coral and turquoise.
+theme:
+  active:       "#ff6b6b"
+  inactive:     "#4f5b5e"
+  selected_bg:  "#263033"
+  text:         Reset
+  hint:         "#7d8f93"
+  error:        "#e8453c"
+  progress:     "#22c1b8"
+  playing_icon: "#4ecdc4"

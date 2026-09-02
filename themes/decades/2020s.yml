@@ -1,0 +1,10 @@
+# 2020s — soft lavender and mint.
+theme:
+  active:       "#b28dff"
+  inactive:     "#54506b"
+  selected_bg:  "#2b2740"
+  text:         Reset
+  hint:         "#8a84a8"
+  error:        "#ff6b8a"
+  progress:     "#7ae7c7"
+  playing_icon: "#a5f3dc"
