@@ -37,6 +37,8 @@ const HELP: &[(&str, &str)] = &[
   ("  Q", "show playback queue"),
   ("  A", "add selected track/episode to queue"),
   ("  D", "delete playlist (confirm)"),
+  ("  z", "toggle shuffle"),
+  ("  R", "cycle repeat (off / all / one)"),
   ("  t", "change theme"),
   ("", ""),
   ("Help", ""),

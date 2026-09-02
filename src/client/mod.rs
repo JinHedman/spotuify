@@ -3,8 +3,8 @@ use anyhow::{Context, Result};
 use rspotify::model::playlist::SimplifiedPlaylist;
 use rspotify::model::{
   AdditionalType, AlbumId, AlbumType, ArtistId, EpisodeId, LibraryId, Market, Offset,
-  PlayContextId, PlayableId, PlayableItem, PlaylistId, SearchResult, SearchType, ShowId,
-  SimplifiedAlbum, TrackId,
+  PlayContextId, PlayableId, PlayableItem, PlaylistId, RepeatState, SearchResult, SearchType,
+  ShowId, SimplifiedAlbum, TrackId,
 };
 use rspotify::{prelude::*, AuthCodeSpotify};
 use std::collections::HashSet;
@@ -43,6 +43,9 @@ pub enum IoEvent {
   ToggleSaveTrack(String),
   ToggleSaveAlbum(String),
   ToggleFollowArtist(String),
+  ToggleShuffle,
+  /// Cycles Off → Context → Track → Off.
+  CycleRepeat,
   UnfollowPlaylist(String),
   GetSavedShows,
   GetShowEpisodes {
@@ -132,6 +135,8 @@ impl Network {
       IoEvent::ToggleSaveTrack(track_id) => self.toggle_save_track(&track_id).await,
       IoEvent::ToggleSaveAlbum(album_id) => self.toggle_save_album(&album_id).await,
       IoEvent::ToggleFollowArtist(artist_id) => self.toggle_follow_artist(&artist_id).await,
+      IoEvent::ToggleShuffle => self.toggle_shuffle().await,
+      IoEvent::CycleRepeat => self.cycle_repeat().await,
       IoEvent::UnfollowPlaylist(playlist_id) => self.unfollow_playlist(&playlist_id).await,
       IoEvent::GetSavedShows => self.get_saved_shows().await,
       IoEvent::GetShowEpisodes { show_id, show_name } => {
@@ -773,6 +778,45 @@ impl Network {
     state.search_results.artists_index = 0;
     state.has_searched = true;
     Ok(())
+  }
+
+  /// Both toggles update `state.playback` locally as well as calling Spotify.
+  /// Without that the indicator would not move until the next poll — up to
+  /// `poll_interval_ms` (3s) later — which reads as the key not working.
+  async fn toggle_shuffle(&self) -> Result<()> {
+    let Some((current, device_id)) = self.playback_toggle_target() else {
+      return Ok(());
+    };
+    let next = !current.0;
+    self.spotify.shuffle(next, device_id.as_deref()).await?;
+    if let Some(p) = self.state.lock().unwrap().playback.as_mut() {
+      p.shuffle_state = next;
+    }
+    Ok(())
+  }
+
+  async fn cycle_repeat(&self) -> Result<()> {
+    let Some((current, device_id)) = self.playback_toggle_target() else {
+      return Ok(());
+    };
+    let next = match current.1 {
+      RepeatState::Off => RepeatState::Context,
+      RepeatState::Context => RepeatState::Track,
+      RepeatState::Track => RepeatState::Off,
+    };
+    self.spotify.repeat(next, device_id.as_deref()).await?;
+    if let Some(p) = self.state.lock().unwrap().playback.as_mut() {
+      p.repeat_state = next;
+    }
+    Ok(())
+  }
+
+  /// Current (shuffle, repeat) plus the active device id, or None when nothing
+  /// is playing — there is no session to change in that case.
+  fn playback_toggle_target(&self) -> Option<((bool, RepeatState), Option<String>)> {
+    let s = self.state.lock().unwrap();
+    let p = s.playback.as_ref()?;
+    Some(((p.shuffle_state, p.repeat_state), p.device.id.clone()))
   }
 
   async fn get_saved_albums(&self) -> Result<()> {

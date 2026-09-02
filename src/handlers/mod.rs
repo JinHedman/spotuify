@@ -151,6 +151,14 @@ pub async fn handle_key(
     }
     return KeyOutcome::Continue;
   }
+  if keys.shuffle.matches(&key) {
+    let _ = io_tx.send(IoEvent::ToggleShuffle).await;
+    return KeyOutcome::Continue;
+  }
+  if keys.repeat.matches(&key) {
+    let _ = io_tx.send(IoEvent::CycleRepeat).await;
+    return KeyOutcome::Continue;
+  }
   if keys.refresh.matches(&key) {
     let _ = io_tx.send(IoEvent::GetCurrentPlayback).await;
     return KeyOutcome::Continue;

@@ -138,6 +138,9 @@ pub struct KeyBindings {
   pub follow_artist: KeyList,
   pub delete_playlist: KeyList,
   pub theme_picker: KeyList,
+  /// Shuffle on/off, and repeat cycling Off → Context → Track.
+  pub shuffle: KeyList,
+  pub repeat: KeyList,
   pub add_to_queue: KeyList,
   /// Directional navigation between the main panes (sidebar ↔ content, etc.).
   pub block_left: KeyList,
@@ -181,6 +184,10 @@ impl Default for KeyBindings {
       follow_artist: KeyList::single("f"),
       delete_playlist: KeyList::single("D"),
       theme_picker: KeyList::single("t"),
+      // `z` follows the mpd/ncmpcpp convention for random. `R` because `r` is
+      // already refresh, and shift-r keeps the mnemonic.
+      shuffle: KeyList::single("z"),
+      repeat: KeyList::single("R"),
       add_to_queue: KeyList::single("A"),
       // Directional pane navigation — mirrors vim/tmux. Uses the user's inverted
       // j/k (j=up, k=down) for vertical consistency with move_up/move_down.
