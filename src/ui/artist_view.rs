@@ -22,7 +22,10 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
   frame.render_widget(block, area);
 
   if state.artist_view.tracks.is_empty() && state.artist_view.albums.is_empty() {
-    frame.render_widget(Paragraph::new("(loading…)"), inner);
+    frame.render_widget(
+      Paragraph::new(crate::ui::spinner::line("loading…", &theme)),
+      inner,
+    );
     return;
   }
 

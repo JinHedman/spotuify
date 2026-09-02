@@ -3,8 +3,8 @@ use anyhow::{Context, Result};
 use rspotify::model::playlist::SimplifiedPlaylist;
 use rspotify::model::{
   AdditionalType, AlbumId, AlbumType, ArtistId, EpisodeId, LibraryId, Market, Offset,
-  PlayContextId, PlayableId, PlayableItem, PlaylistId, SearchResult, SearchType, ShowId,
-  SimplifiedAlbum, TrackId,
+  PlayContextId, PlayableId, PlayableItem, PlaylistId, RepeatState, SearchResult, SearchType,
+  ShowId, SimplifiedAlbum, TrackId,
 };
 use rspotify::{prelude::*, AuthCodeSpotify};
 use std::collections::HashSet;
@@ -43,6 +43,9 @@ pub enum IoEvent {
   ToggleSaveTrack(String),
   ToggleSaveAlbum(String),
   ToggleFollowArtist(String),
+  ToggleShuffle,
+  /// Cycles Off → Context → Track → Off.
+  CycleRepeat,
   UnfollowPlaylist(String),
   GetSavedShows,
   GetShowEpisodes {
@@ -104,6 +107,37 @@ impl Network {
   }
 
   async fn dispatch(&self, event: IoEvent) -> Result<()> {
+    // Flag track-list fetches so the main pane can show progress. Set here
+    // rather than in each handler so there is a single list to keep correct,
+    // and cleared unconditionally below so a failed fetch cannot leave a
+    // spinner running forever.
+    let loads_track_list = matches!(
+      event,
+      IoEvent::GetPlaylistTracks { .. }
+        | IoEvent::GetAlbumTracks { .. }
+        | IoEvent::GetSavedTracks
+        | IoEvent::GetRecentlyPlayed
+    );
+    let is_search = matches!(event, IoEvent::Search(_));
+    if loads_track_list || is_search {
+      let mut s = self.state.lock().unwrap();
+      s.track_list_loading |= loads_track_list;
+      s.search_loading |= is_search;
+    }
+    let result = self.dispatch_inner(event).await;
+    if loads_track_list || is_search {
+      let mut s = self.state.lock().unwrap();
+      if loads_track_list {
+        s.track_list_loading = false;
+      }
+      if is_search {
+        s.search_loading = false;
+      }
+    }
+    result
+  }
+
+  async fn dispatch_inner(&self, event: IoEvent) -> Result<()> {
     match event {
       // Unreachable in practice — `run` intercepts it before dispatching.
       IoEvent::Shutdown => Ok(()),
@@ -132,6 +166,8 @@ impl Network {
       IoEvent::ToggleSaveTrack(track_id) => self.toggle_save_track(&track_id).await,
       IoEvent::ToggleSaveAlbum(album_id) => self.toggle_save_album(&album_id).await,
       IoEvent::ToggleFollowArtist(artist_id) => self.toggle_follow_artist(&artist_id).await,
+      IoEvent::ToggleShuffle => self.toggle_shuffle().await,
+      IoEvent::CycleRepeat => self.cycle_repeat().await,
       IoEvent::UnfollowPlaylist(playlist_id) => self.unfollow_playlist(&playlist_id).await,
       IoEvent::GetSavedShows => self.get_saved_shows().await,
       IoEvent::GetShowEpisodes { show_id, show_name } => {
@@ -775,6 +811,65 @@ impl Network {
     Ok(())
   }
 
+  async fn toggle_shuffle(&self) -> Result<()> {
+    let Some((shuffle, _, device_id)) = self.authoritative_modes().await? else {
+      return Ok(());
+    };
+    let next = !shuffle;
+    self.spotify.shuffle(next, device_id.as_deref()).await?;
+    self.apply_mode_locally(Some(next), None);
+    Ok(())
+  }
+
+  async fn cycle_repeat(&self) -> Result<()> {
+    let Some((_, repeat, device_id)) = self.authoritative_modes().await? else {
+      return Ok(());
+    };
+    let next = match repeat {
+      RepeatState::Off => RepeatState::Context,
+      RepeatState::Context => RepeatState::Track,
+      RepeatState::Track => RepeatState::Off,
+    };
+    self.spotify.repeat(next, device_id.as_deref()).await?;
+    self.apply_mode_locally(None, Some(next));
+    Ok(())
+  }
+
+  /// Current (shuffle, repeat, device) read from Spotify rather than from our
+  /// cache, or None when nothing is playing.
+  ///
+  /// The re-read is the point. Shuffle and repeat can be changed from any other
+  /// Spotify client, and our cached copy is up to `poll_interval_ms` (3s) old
+  /// besides. Inverting a stale value makes the first keypress a silent no-op:
+  /// it PUTs the state Spotify is already in, nothing appears to happen, and
+  /// only the second press works. Costs one extra request on a key nobody
+  /// presses in a loop.
+  async fn authoritative_modes(&self) -> Result<Option<(bool, RepeatState, Option<String>)>> {
+    self.get_current_playback().await?;
+    let s = self.state.lock().unwrap();
+    Ok(
+      s.playback
+        .as_ref()
+        .map(|p| (p.shuffle_state, p.repeat_state, p.device.id.clone())),
+    )
+  }
+
+  /// Write the mode we just set into cached playback so the indicator moves
+  /// immediately. Deliberately not `refetch_after_mutation` — that sleeps
+  /// 250ms and re-requests, which would make the key feel sluggish when we
+  /// already know the value we set. A rejected PUT self-heals on the next poll.
+  fn apply_mode_locally(&self, shuffle: Option<bool>, repeat: Option<RepeatState>) {
+    let mut s = self.state.lock().unwrap();
+    if let Some(p) = s.playback.as_mut() {
+      if let Some(v) = shuffle {
+        p.shuffle_state = v;
+      }
+      if let Some(v) = repeat {
+        p.repeat_state = v;
+      }
+    }
+  }
+
   async fn get_saved_albums(&self) -> Result<()> {
     let page = self
       .spotify
@@ -1411,6 +1506,69 @@ mod tests {
     let ((tr, _, tb), (br, _, bb)) = art.cells[last];
     assert!(tb > 200 && tr < 60, "top of last row should be blue");
     assert!(bb > 200 && br < 60, "bottom of last row should be blue");
+  }
+
+  fn test_network() -> (Network, Arc<Mutex<AppState>>) {
+    use crate::config::user::UserConfig;
+    use rspotify::{Credentials, OAuth};
+    let cfg = UserConfig::load_or_default(std::path::Path::new(
+      "/nonexistent/spotuify-test-config.yml",
+    ))
+    .unwrap();
+    let state = Arc::new(Mutex::new(AppState::new(Arc::new(cfg))));
+    let spotify = AuthCodeSpotify::new(Credentials::new("id", "secret"), OAuth::default());
+    (Network::new(spotify, Arc::clone(&state)), state)
+  }
+
+  /// A stuck spinner is worse than no spinner: it says work is happening when
+  /// nothing is. The flag must clear even when the fetch fails.
+  ///
+  /// Uses a malformed album id so `AlbumId::from_id` rejects it before any
+  /// HTTP happens — the test stays deterministic and offline.
+  #[tokio::test]
+  async fn track_list_loading_clears_when_the_fetch_fails() {
+    let (network, state) = test_network();
+    assert!(!state.lock().unwrap().track_list_loading, "starts clear");
+
+    let result = network
+      .dispatch(IoEvent::GetAlbumTracks {
+        album_id: "not a valid spotify id!".to_string(),
+        album_name: "x".to_string(),
+      })
+      .await;
+
+    assert!(result.is_err(), "malformed id must fail");
+    assert!(
+      !state.lock().unwrap().track_list_loading,
+      "flag must be cleared on the error path, or the spinner spins forever"
+    );
+  }
+
+  /// Same stuck-spinner guarantee for search. `Search` with dummy credentials
+  /// fails without a token, and the flag must not survive that.
+  #[tokio::test]
+  async fn search_loading_clears_when_the_search_fails() {
+    let (network, state) = test_network();
+    let result = tokio::time::timeout(
+      Duration::from_secs(20),
+      network.dispatch(IoEvent::Search("anything".to_string())),
+    )
+    .await;
+
+    // Whether it failed fast or was refused by Spotify, the flag must be down.
+    assert!(result.is_ok(), "dispatch should return, not hang");
+    assert!(
+      !state.lock().unwrap().search_loading,
+      "flag must be cleared however the search ended"
+    );
+  }
+
+  /// Events that do not populate the track list must not raise the flag.
+  #[tokio::test]
+  async fn non_track_list_events_leave_the_flag_alone() {
+    let (network, state) = test_network();
+    let _ = network.dispatch(IoEvent::Shutdown).await;
+    assert!(!state.lock().unwrap().track_list_loading);
   }
 
   /// The quit hang: `run` must return when handed the Shutdown sentinel.

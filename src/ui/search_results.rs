@@ -20,6 +20,17 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
   let inner = block.inner(area);
   frame.render_widget(block, area);
 
+  // The first search has no results to fall back on, so show progress in the
+  // body. A re-search keeps the previous results visible and is marked on the
+  // tab row instead, further down.
+  if state.search_loading && !state.has_searched {
+    frame.render_widget(
+      Paragraph::new(crate::ui::spinner::line("searching…", &theme)),
+      inner,
+    );
+    return;
+  }
+
   if !state.has_searched {
     frame.render_widget(Paragraph::new("Press / to search Spotify."), inner);
     return;
@@ -43,7 +54,26 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         .add_modifier(Modifier::BOLD),
     )
     .divider("│");
-  frame.render_widget(tabs, rows[0]);
+
+  // Re-searching replaces results only on completion, so the old ones stay on
+  // screen. Mark the tab row rather than blanking the pane.
+  if state.search_loading {
+    let split = Layout::new(
+      Direction::Horizontal,
+      [Constraint::Min(1), Constraint::Length(2)],
+    )
+    .split(rows[0]);
+    frame.render_widget(tabs, split[0]);
+    frame.render_widget(
+      Paragraph::new(Line::styled(
+        crate::ui::spinner::frame(crate::ui::spinner::now_ms()),
+        Style::default().fg(theme.active),
+      )),
+      split[1],
+    );
+  } else {
+    frame.render_widget(tabs, rows[0]);
+  }
 
   let is_active = state.active_block == ActiveBlock::SearchResults;
   let (items, selected) = make_items(&state.search_results, state.search_tab, is_active);

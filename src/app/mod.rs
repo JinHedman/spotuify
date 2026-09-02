@@ -177,12 +177,18 @@ pub struct AppState {
   pub track_list_title: String,
   pub track_list_context_uri: Option<String>,
   pub track_list_index: usize,
+  /// True while a track-list fetch is in flight. Distinct from `is_loading`,
+  /// which tracks the playback poll and therefore flickers every
+  /// `poll_interval_ms` regardless of what the main pane is doing.
+  pub track_list_loading: bool,
   pub track_list_offset: usize,
 
   pub search_query: String,
   pub search_results: SearchResults,
   pub search_tab: SearchTab,
   pub has_searched: bool,
+  /// True while a search request is in flight.
+  pub search_loading: bool,
 
   pub devices: Vec<Device>,
   pub devices_index: usize,
@@ -213,6 +219,9 @@ pub struct AppState {
   pub dialog: Option<Dialog>,
 
   pub help_visible: bool,
+  /// Scroll offset for the help overlay, in lines. Clamped at draw time,
+  /// which is the only place the visible height is known.
+  pub help_scroll: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -252,11 +261,13 @@ impl AppState {
       track_list_title: String::new(),
       track_list_context_uri: None,
       track_list_index: 0,
+      track_list_loading: false,
       track_list_offset: 0,
       search_query: String::new(),
       search_results: SearchResults::default(),
       search_tab: SearchTab::Tracks,
       has_searched: false,
+      search_loading: false,
       devices: Vec::new(),
       devices_index: 0,
       saved_albums: Vec::new(),
@@ -278,6 +289,7 @@ impl AppState {
       queue_index: 0,
       dialog: None,
       help_visible: false,
+      help_scroll: 0,
     }
   }
 

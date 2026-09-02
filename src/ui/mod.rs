@@ -18,6 +18,7 @@ pub mod search_input;
 pub mod search_results;
 pub mod select_device;
 pub mod show_episodes;
+pub mod spinner;
 pub mod theme_picker;
 pub mod too_small;
 pub mod track_table;
@@ -178,6 +179,6 @@ pub fn draw(frame: &mut Frame, state: &Arc<Mutex<AppState>>) {
   }
 
   if state.help_visible {
-    help::draw(frame, area, &state.theme);
+    help::draw(frame, area, &mut state);
   }
 }

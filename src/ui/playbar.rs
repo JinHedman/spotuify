@@ -6,7 +6,7 @@ use ratatui::{
   widgets::{Block, Borders, Gauge, Paragraph},
   Frame,
 };
-use rspotify::model::{CurrentlyPlayingType, PlayableItem};
+use rspotify::model::{CurrentlyPlayingType, PlayableItem, RepeatState};
 use serde_json::Value;
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -22,12 +22,12 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
   }
 
   let Some(playback) = state.playback.as_ref() else {
-    let text = if state.is_loading {
-      "Loading…"
+    let line = if state.is_loading {
+      crate::ui::spinner::line("Loading…", &theme)
     } else {
-      "Nothing playing. Start Spotify on any device, then press r."
+      Line::raw("Nothing playing. Start Spotify on any device, then press r.")
     };
-    frame.render_widget(Paragraph::new(text), inner);
+    frame.render_widget(Paragraph::new(line), inner);
     return;
   };
 
@@ -62,11 +62,54 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     0.0
   };
   let label = format!("{}  /  {}", format_ms(progress_ms), format_ms(duration_ms));
+
+  // Indicators sit on the timeline row, right-aligned, so the eye finds
+  // playback state in one place.
+  let bar = Layout::new(
+    Direction::Horizontal,
+    [Constraint::Min(10), Constraint::Length(MODE_WIDTH)],
+  )
+  .split(rows[1]);
+
   let gauge = Gauge::default()
     .gauge_style(Style::default().fg(theme.progress))
+    // Without this the bar snaps a whole cell at a time, throwing away the
+    // sub-second smoothing that `extrapolated_progress_ms` exists to provide.
+    // Unicode eighth-blocks give eight times the horizontal resolution.
+    .use_unicode(true)
     .ratio(ratio)
     .label(label);
-  frame.render_widget(gauge, rows[1]);
+  frame.render_widget(gauge, bar[0]);
+  frame.render_widget(Paragraph::new(mode_line(playback, &theme)), bar[1]);
+}
+
+/// Width reserved for the shuffle/repeat indicators: leading space, shuffle
+/// glyph, gap, repeat glyph, and the `1` suffix for track-repeat.
+const MODE_WIDTH: u16 = 6;
+
+/// Shuffle and repeat state, always rendered — dim when off rather than
+/// hidden, so the glyphs never move and their absence can't be mistaken for
+/// a rendering gap.
+fn mode_line<'a>(
+  playback: &rspotify::model::context::CurrentPlaybackContext,
+  theme: &crate::config::theme::Theme,
+) -> Line<'a> {
+  let on = Style::default().fg(theme.active);
+  let off = Style::default().fg(theme.hint);
+
+  let shuffle = Span::styled("\u{21c4}", if playback.shuffle_state { on } else { off });
+  let (repeat_glyph, repeat_style) = match playback.repeat_state {
+    RepeatState::Off => ("\u{21bb} ", off),
+    RepeatState::Context => ("\u{21bb} ", on),
+    RepeatState::Track => ("\u{21bb}1", on),
+  };
+
+  Line::from(vec![
+    Span::raw(" "),
+    shuffle,
+    Span::raw(" "),
+    Span::styled(repeat_glyph, repeat_style),
+  ])
 }
 
 fn item_display(

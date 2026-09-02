@@ -71,6 +71,8 @@ Press `?` at any time for the in-app help overlay. Defaults:
 | `+` / `-` | Volume ±10 |
 | `[` / `]` | Seek ±5 seconds |
 | `r` | Refresh current playback |
+| `z` | Toggle shuffle |
+| `R` | Cycle repeat (off → all → one) |
 | `s` | Save / unsave current track |
 | `S` | Save / unsave current album |
 | `f` | Follow / unfollow current artist |
@@ -102,7 +104,9 @@ All keys except `Ctrl+C` are remappable via `config.yml` (see below).
 - **Search** — `/` to open. Submits to Spotify search with 4 tabs (Tracks / Albums / Artists / Playlists). Enter on a track plays; Enter on album/artist/playlist opens it in TrackTable.
 - **Queue** — `Q` shows currently playing + upcoming. `A` from TrackTable / ShowEpisodes / search-track-results adds the selected item to the queue.
 - **Device selector** — `d` lists your Spotify Connect devices. `Enter` transfers playback.
-- **Playback control** — play/pause, next/prev, seek, volume.
+- **Playback control** — play/pause, next/prev, seek, volume, shuffle (`z`), repeat (`R`).
+- **Shuffle / repeat indicators** — shown on the playbar timeline row: `⇄` for shuffle, `↻` for repeat-all, `↻1` for repeat-one. Dim when off. Worth knowing that `n` / `p` follow Spotify's queue, so with shuffle on they jump to a random track — the indicator is there to make that visible rather than surprising.
+- **Smooth progress bar** — sub-cell resolution via unicode eighth-blocks, so the extrapolated progress actually shows as smooth motion.
 - **Save toggle** — `s` toggles save/unsave for the currently-playing track, `S` for the current album, `f` for the current artist.
 - **Remove playlist** — `D` on a highlighted playlist opens a confirmation dialog; confirming unfollows it (which deletes your own playlists).
 - **Block navigation** — every view is a block; `Tab` cycles, Enter pushes onto a history stack, `b`/`Backspace` pops.
@@ -191,6 +195,8 @@ keybindings:
   follow_artist:    f
   delete_playlist:  D
   theme_picker:     t
+  shuffle:          z
+  repeat:           R
   add_to_queue:     A
   block_left:       ctrl+h
   block_right:      ctrl+l

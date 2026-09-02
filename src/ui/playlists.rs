@@ -26,7 +26,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
   let block = layout::block(&title, ActiveBlock::MyPlaylists, state.active_block, &theme);
 
   if state.playlists.is_empty() {
-    let placeholder = Paragraph::new("(loading…)").block(block);
+    let placeholder = Paragraph::new(crate::ui::spinner::line("loading…", &theme)).block(block);
     frame.render_widget(placeholder, area);
     return;
   }
