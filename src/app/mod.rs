@@ -335,6 +335,31 @@ impl AppState {
     Some(base + elapsed)
   }
 
+  /// URI of whatever is playing — track or episode.
+  ///
+  /// Returns None for anything without a URI (local files, unrecognised
+  /// items). Callers comparing against `TrackRow::uri`, which is also
+  /// optional, must check this is `Some` first: two `None`s compare equal and
+  /// would mark every unplayable row as playing.
+  pub fn playing_uri(&self) -> Option<String> {
+    use rspotify::prelude::Id;
+    self.playback.as_ref().and_then(|p| match p.item.as_ref()? {
+      PlayableItem::Track(t) => t.id.as_ref().map(|id| id.uri()),
+      PlayableItem::Episode(e) => Some(e.id.uri()),
+      // `PlayableItem` is #[serde(untagged)] with an Unknown(Value) fallback,
+      // so an item whose shape drifts from rspotify's FullTrack lands here
+      // silently rather than failing. That is not hypothetical: the playbar
+      // (`ui::playbar::unknown_from_json`) and the playlist item mapper both
+      // already handle it, because Spotify's responses do reach it.
+      //
+      // Returning None here meant the playbar could show a track while the
+      // now-playing marker had nothing to match against — visible as a
+      // playing song with no marker on its row. Spotify always sends `uri`,
+      // so read it straight out of the raw JSON.
+      PlayableItem::Unknown(json) => json.get("uri").and_then(|v| v.as_str()).map(str::to_string),
+    })
+  }
+
   pub fn current_track_id(&self) -> Option<String> {
     use rspotify::prelude::Id;
     self.playback.as_ref().and_then(|p| match p.item.as_ref()? {
