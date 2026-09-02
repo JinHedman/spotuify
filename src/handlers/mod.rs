@@ -208,7 +208,7 @@ pub async fn handle_key(
   }
   if keys.theme_picker.matches(&key) {
     let mut s = state.lock().unwrap();
-    s.theme_before_preview = Some(s.theme);
+    s.begin_theme_preview();
     // Default the cursor to whichever preset matches the current theme, so
     // the cancel/revert path is a no-op for users already on a preset.
     // Land on the entry matching the active source: the auto entry when it is

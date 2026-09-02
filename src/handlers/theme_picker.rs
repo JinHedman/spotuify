@@ -18,10 +18,7 @@ pub(super) async fn handle(
   // Cancel: revert to the saved theme and close.
   if keys.quit.matches(&key) || keys.back.matches(&key) {
     let mut s = state.lock().unwrap();
-    if let Some(saved) = s.theme_before_preview.take() {
-      // Snap on cancel: fading back would read as the app undoing itself.
-      s.set_theme_immediate(saved);
-    }
+    s.cancel_theme_preview();
     s.pop_block();
     return;
   }

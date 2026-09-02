@@ -26,6 +26,18 @@ pub const LIBRARY_ENTRIES: [&str; 5] = [
   "Recently Played",
 ];
 
+/// Everything a preview has to restore on cancel.
+///
+/// `theme` alone is not enough: `apply_theme_source` recomputes the target
+/// from the mode and fixed palette every frame, so a cancel that restored
+/// only the rendered theme would be reverted on the very next frame.
+#[derive(Debug, Clone, Copy)]
+pub struct ThemeSnapshot {
+  theme: Theme,
+  mode: ThemeMode,
+  fixed: Theme,
+}
+
 /// Where the active theme comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
@@ -175,8 +187,8 @@ pub struct AppState {
   /// Live theme — initialized from config, can be changed at runtime via the
   /// theme picker. UI code should read from `state.theme`, not `state.config.theme`.
   pub theme: Theme,
-  /// Saved theme so the picker can revert on cancel.
-  pub theme_before_preview: Option<Theme>,
+  /// Saved theme source so the picker can revert on cancel.
+  pub theme_before_preview: Option<ThemeSnapshot>,
   /// Which source decides the theme.
   pub theme_mode: ThemeMode,
   /// The chosen fixed palette. Used directly in `Fixed` mode, and as the
@@ -350,6 +362,27 @@ impl AppState {
       .unwrap_or(0)
   }
 
+  /// Snapshot the current theme source before previewing.
+  pub fn begin_theme_preview(&mut self) {
+    self.theme_before_preview = Some(ThemeSnapshot {
+      theme: self.theme,
+      mode: self.theme_mode,
+      fixed: self.theme_fixed,
+    });
+  }
+
+  /// Restore the snapshot taken by `begin_theme_preview`, if any.
+  ///
+  /// Snaps rather than fades: animating back would read as the app undoing
+  /// itself rather than as a cancellation.
+  pub fn cancel_theme_preview(&mut self) {
+    if let Some(snap) = self.theme_before_preview.take() {
+      self.theme_mode = snap.mode;
+      self.theme_fixed = snap.fixed;
+      self.set_theme_immediate(snap.theme);
+    }
+  }
+
   /// Point the theme at preset `index`, fading over `duration`.
   ///
   /// The single entry point for choosing a theme, so mode and palette can
@@ -383,6 +416,19 @@ impl AppState {
       ThemeMode::Fixed => self.theme_fixed,
       ThemeMode::DecadeAuto => self.decade_theme().unwrap_or(self.theme_fixed),
     };
+    // Never restart a fade that is already heading to this target. This runs
+    // every frame, and `set_theme` resets the transition clock, so restarting
+    // pins elapsed at ~0 and the fade never advances. With a named colour,
+    // which snaps at the midpoint rather than interpolating, t stays below
+    // 0.5 forever and the theme never moves at all — the theme appearing to
+    // change only after a restart, since startup snaps.
+    let already_heading_there = match &self.theme_transition {
+      Some(t) => t.to == target,
+      None => self.theme == target,
+    };
+    if already_heading_there {
+      return;
+    }
     self.set_theme(target, duration);
   }
 
@@ -768,5 +814,80 @@ mod theme_transition_tests {
     let before = s.theme;
     s.tick_theme();
     assert_eq!(s.theme, before);
+  }
+}
+
+#[cfg(test)]
+mod draw_loop_tests {
+  use super::*;
+  use crate::config::user::UserConfig;
+
+  fn state() -> AppState {
+    let cfg = UserConfig::load_or_default(std::path::Path::new(
+      "/nonexistent/spotuify-test-config.yml",
+    ))
+    .unwrap();
+    AppState::new(Arc::new(cfg))
+  }
+
+  /// Cancelling a preview must survive the next frame. `apply_theme_source`
+  /// recomputes from `theme_mode`/`theme_fixed`, so restoring only `theme`
+  /// leaves the previewed palette as the source and the next frame fades
+  /// straight back to it.
+  #[test]
+  fn cancelling_a_preview_is_not_undone_by_the_next_frame() {
+    use crate::config::presets::PRESETS;
+    let mut s = state();
+    let original = s.theme;
+
+    // Open the picker and preview a different preset.
+    s.begin_theme_preview();
+    s.select_preset(1, Duration::ZERO);
+    assert_ne!(s.theme, original, "preview changed the theme");
+
+    // Cancel.
+    s.cancel_theme_preview();
+    assert_eq!(s.theme, original, "cancel restored the theme");
+
+    // Now let the draw loop run.
+    for _ in 0..20 {
+      s.apply_theme_source(Duration::ZERO);
+      s.tick_theme();
+    }
+    assert_eq!(
+      s.theme,
+      original,
+      "cancel must hold; got {:?} which is preset 1's {:?}",
+      s.theme.active,
+      PRESETS[1].theme().unwrap().active
+    );
+  }
+
+  /// Simulates what `ui::draw` does every frame: recompute the source, then
+  /// advance the fade. A theme picked in the picker must actually arrive.
+  #[test]
+  fn a_selected_theme_converges_within_a_reasonable_number_of_frames() {
+    use crate::config::presets::PRESETS;
+    let mut s = state();
+    let fade = Duration::from_millis(350);
+
+    s.select_preset(1, fade);
+    let target = PRESETS[1].theme().unwrap();
+
+    for frame in 0..200 {
+      s.apply_theme_source(fade);
+      s.tick_theme();
+      if s.theme == target && !s.theme_transition_active() {
+        println!("converged after {frame} frames");
+        return;
+      }
+      std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!(
+      "theme never landed on the target.\n  want {:?}\n  got  {:?}\n  transition still active: {}",
+      target.active,
+      s.theme.active,
+      s.theme_transition_active()
+    );
   }
 }
