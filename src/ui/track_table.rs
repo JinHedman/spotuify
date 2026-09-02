@@ -135,3 +135,204 @@ fn format_ms(ms: u64) -> String {
   let seconds = total_secs % 60;
   format!("{minutes}:{seconds:02}")
 }
+
+#[cfg(test)]
+mod tests {
+  use super::draw;
+  use crate::app::{AppState, TrackRow};
+  use crate::config::user::UserConfig;
+  use ratatui::{backend::TestBackend, Terminal};
+  use std::sync::Arc;
+
+  fn row(name: &str, uri: Option<&str>) -> TrackRow {
+    TrackRow {
+      uri: uri.map(str::to_string),
+      name: name.to_string(),
+      artists: "Artist".to_string(),
+      album: "Album".to_string(),
+      duration_ms: 200_000,
+    }
+  }
+
+  /// Builds a playback context by deserializing it, rather than assembling a
+  /// dozen model structs by hand. Doubles as a check that the shape we expect
+  /// from Spotify still parses.
+  fn playing(uri: &str, is_playing: bool) -> rspotify::model::CurrentPlaybackContext {
+    let id = uri.rsplit(':').next().unwrap();
+    serde_json::from_value(serde_json::json!({
+      "device": {
+        "id": "dev1", "is_active": true, "is_private_session": false,
+        "is_restricted": false, "name": "Test", "type": "Computer",
+        "volume_percent": 50
+      },
+      "repeat_state": "off",
+      "shuffle_state": false,
+      "context": null,
+      "timestamp": 1_767_225_600_000i64,
+      "progress_ms": 1000,
+      "is_playing": is_playing,
+      "currently_playing_type": "track",
+      "actions": { "disallows": {} },
+      "item": {
+        "album": {
+          "album_type": "album", "artists": [], "external_urls": {},
+          "href": null, "id": null, "images": [], "name": "Album",
+          "release_date": "2020", "release_date_precision": "year",
+          "album_group": null, "restrictions": null, "type": "album",
+          "uri": "spotify:album:x", "total_tracks": 1
+        },
+        "artists": [],
+        "disc_number": 1,
+        "duration_ms": 200_000,
+        "explicit": false,
+        "external_ids": {},
+        "external_urls": {},
+        "href": null,
+        "id": id,
+        "is_local": false,
+        "is_playable": true,
+        "linked_from": null,
+        "restrictions": null,
+        "name": "Beta",
+        "popularity": 1,
+        "preview_url": null,
+        "track_number": 1,
+        "type": "track",
+        "uri": uri
+      }
+    }))
+    .expect("playback fixture must deserialize")
+  }
+
+  fn state_with(list: Vec<TrackRow>) -> AppState {
+    let cfg = UserConfig::load_or_default(std::path::Path::new(
+      "/nonexistent/spotuify-test-config.yml",
+    ))
+    .unwrap();
+    let mut s = AppState::new(Arc::new(cfg));
+    s.track_list = list;
+    s.track_list_title = "Test".to_string();
+    s
+  }
+
+  /// Renders the pane and returns every cell's character, so assertions run
+  /// against what actually reaches the screen rather than the intent.
+  fn render(state: &mut AppState, width: u16, height: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|f| draw(f, f.area(), state)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (0..buf.area.height)
+      .map(|y| {
+        (0..buf.area.width)
+          .map(|x| buf[(x, y)].symbol().to_string())
+          .collect::<String>()
+      })
+      .collect::<Vec<_>>()
+      .join("\n")
+  }
+
+  /// The row numbers must be on screen at all — establishes that the gutter
+  /// column renders before asserting anything about the marker.
+  #[test]
+  fn gutter_column_is_rendered() {
+    let mut state = state_with(vec![
+      row("Alpha", Some("spotify:track:a")),
+      row("Beta", Some("spotify:track:b")),
+    ]);
+    let out = render(&mut state, 80, 10);
+    assert!(out.contains("Alpha"), "track names render:\n{out}");
+    assert!(
+      out.contains('1') && out.contains('2'),
+      "row numbers render:\n{out}"
+    );
+  }
+
+  /// Fails if the equalizer never reaches the buffer — whether because of a
+  /// matching bug or because the column is squeezed out by overflow.
+  #[test]
+  fn playing_row_shows_the_equalizer() {
+    let mut state = state_with(vec![
+      row("Alpha", Some("spotify:track:a")),
+      row("Beta", Some("spotify:track:b")),
+    ]);
+    state.playback = Some(playing("spotify:track:b", true));
+
+    let out = render(&mut state, 80, 10);
+    let bars = ['\u{2581}', '\u{2583}', '\u{2585}', '\u{2587}'];
+    assert!(
+      out.chars().any(|c| bars.contains(&c)),
+      "no equalizer bar reached the screen:\n{out}"
+    );
+  }
+
+  /// The regression that hides the marker in practice.
+  ///
+  /// `PlayableItem` is #[serde(untagged)] with an `Unknown(Value)` fallback, so
+  /// a playback item whose shape has drifted from rspotify's `FullTrack` lands
+  /// there instead of failing. The playbar renders those fine via its raw-JSON
+  /// path, so the song looks like it is playing normally — but `playing_uri()`
+  /// used to return None for Unknown, leaving the marker nothing to match and
+  /// no visible reason why.
+  #[tokio::test]
+  async fn playing_row_is_marked_even_when_the_item_did_not_parse() {
+    let mut state = state_with(vec![
+      row("Alpha", Some("spotify:track:a")),
+      row("Beta", Some("spotify:track:b")),
+    ]);
+
+    // Deliberately not a valid FullTrack — exactly what drops into Unknown.
+    let raw = serde_json::json!({
+      "device": {
+        "id": "dev1", "is_active": true, "is_private_session": false,
+        "is_restricted": false, "name": "Test", "type": "Computer",
+        "volume_percent": 50
+      },
+      "repeat_state": "off",
+      "shuffle_state": false,
+      "context": null,
+      "timestamp": 1_767_225_600_000i64,
+      "progress_ms": 1000,
+      "is_playing": true,
+      "currently_playing_type": "track",
+      "actions": { "disallows": {} },
+      "item": { "name": "Beta", "uri": "spotify:track:b", "some_new_field": 1 }
+    });
+    let playback: rspotify::model::CurrentPlaybackContext =
+      serde_json::from_value(raw).expect("must parse via the Unknown fallback");
+    assert!(
+      playback.item.as_ref().unwrap().is_unknown(),
+      "fixture must exercise the Unknown variant, not Track"
+    );
+    state.playback = Some(playback);
+
+    assert_eq!(
+      state.playing_uri().as_deref(),
+      Some("spotify:track:b"),
+      "the URI must still be recoverable from the raw JSON"
+    );
+
+    let out = render(&mut state, 80, 10);
+    let bars = ['\u{2581}', '\u{2583}', '\u{2585}', '\u{2587}'];
+    assert!(
+      out.chars().any(|c| bars.contains(&c)),
+      "marker missing for an unparsed playback item:\n{out}"
+    );
+  }
+
+  /// The pane is narrower than the sum of its column constraints, which is
+  /// the case the user hit. The gutter must survive it.
+  #[test]
+  fn equalizer_survives_a_narrow_pane() {
+    let mut state = state_with(vec![row("Alpha", Some("spotify:track:a"))]);
+    state.playback = Some(playing("spotify:track:a", true));
+
+    for width in [40u16, 60, 80, 120] {
+      let out = render(&mut state, width, 8);
+      let bars = ['\u{2581}', '\u{2583}', '\u{2585}', '\u{2587}'];
+      assert!(
+        out.chars().any(|c| bars.contains(&c)),
+        "equalizer missing at width {width}:\n{out}"
+      );
+    }
+  }
+}
