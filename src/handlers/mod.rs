@@ -45,8 +45,27 @@ pub async fn handle_key(
 
   // Overlays get first crack.
   if state.lock().unwrap().help_visible {
-    if keys.help.matches(&key) || keys.quit.matches(&key) {
-      state.lock().unwrap().help_visible = false;
+    let mut s = state.lock().unwrap();
+    if keys.help.matches(&key) || keys.quit.matches(&key) || keys.back.matches(&key) {
+      s.help_visible = false;
+      return KeyOutcome::Continue;
+    }
+    // The list is longer than most terminals, so it scrolls with the same
+    // keys as every other list. draw() clamps the upper bound, since only it
+    // knows how many lines are visible.
+    let step: u16 = if keys.move_down_big.matches(&key) || keys.move_up_big.matches(&key) {
+      5
+    } else {
+      1
+    };
+    if keys.move_down.matches(&key) || keys.move_down_big.matches(&key) {
+      s.help_scroll = s.help_scroll.saturating_add(step);
+    } else if keys.move_up.matches(&key) || keys.move_up_big.matches(&key) {
+      s.help_scroll = s.help_scroll.saturating_sub(step);
+    } else if keys.move_top.matches(&key) {
+      s.help_scroll = 0;
+    } else if keys.move_bottom.matches(&key) {
+      s.help_scroll = u16::MAX;
     }
     return KeyOutcome::Continue;
   }
@@ -82,7 +101,10 @@ pub async fn handle_key(
     return KeyOutcome::Quit;
   }
   if keys.help.matches(&key) {
-    state.lock().unwrap().help_visible = true;
+    let mut s = state.lock().unwrap();
+    s.help_visible = true;
+    // Always open at the top rather than wherever it was last left.
+    s.help_scroll = 0;
     return KeyOutcome::Continue;
   }
   if keys.search.matches(&key) {
@@ -242,4 +264,96 @@ pub async fn handle_key(
   }
 
   KeyOutcome::Continue
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::config::user::UserConfig;
+  use crossterm::event::KeyEventKind;
+
+  fn test_state() -> Mutex<AppState> {
+    let cfg = UserConfig::load_or_default(std::path::Path::new(
+      "/nonexistent/spotuify-test-config.yml",
+    ))
+    .unwrap();
+    Mutex::new(AppState::new(Arc::new(cfg)))
+  }
+
+  fn press(c: char) -> KeyEvent {
+    KeyEvent {
+      code: KeyCode::Char(c),
+      modifiers: KeyModifiers::NONE,
+      kind: KeyEventKind::Press,
+      state: crossterm::event::KeyEventState::NONE,
+    }
+  }
+
+  /// Also a deadlock guard: the overlay branch re-locks the state mutex inside
+  /// a block whose condition also locked it. std::sync::Mutex is not
+  /// reentrant, so if that temporary guard outlived the condition this test
+  /// would hang instead of fail.
+  #[tokio::test]
+  async fn help_overlay_scrolls_and_closes() {
+    let state = test_state();
+    let (tx, _rx) = mpsc::channel::<IoEvent>(8);
+
+    // Default bindings: `?` opens, k scrolls down, j up, G to bottom.
+    handle_key(press('?'), &state, &tx).await;
+    assert!(state.lock().unwrap().help_visible, "? opens the overlay");
+    assert_eq!(state.lock().unwrap().help_scroll, 0, "opens at the top");
+
+    handle_key(press('k'), &state, &tx).await;
+    assert_eq!(state.lock().unwrap().help_scroll, 1, "k scrolls down one");
+
+    handle_key(press('K'), &state, &tx).await;
+    assert_eq!(state.lock().unwrap().help_scroll, 6, "K scrolls down five");
+
+    handle_key(press('j'), &state, &tx).await;
+    assert_eq!(state.lock().unwrap().help_scroll, 5, "j scrolls back up");
+
+    handle_key(press('g'), &state, &tx).await;
+    assert_eq!(state.lock().unwrap().help_scroll, 0, "g returns to top");
+
+    // Must not underflow past the top.
+    handle_key(press('j'), &state, &tx).await;
+    assert_eq!(state.lock().unwrap().help_scroll, 0, "no underflow at top");
+
+    handle_key(press('?'), &state, &tx).await;
+    assert!(!state.lock().unwrap().help_visible, "? closes it again");
+
+    // Reopening starts at the top even after having scrolled.
+    handle_key(press('?'), &state, &tx).await;
+    handle_key(press('K'), &state, &tx).await;
+    handle_key(press('?'), &state, &tx).await;
+    handle_key(press('?'), &state, &tx).await;
+    assert_eq!(state.lock().unwrap().help_scroll, 0, "reopens at the top");
+  }
+
+  /// Keys that would otherwise act on the app must not leak through the
+  /// overlay — pressing Space with help open should not toggle playback.
+  #[tokio::test]
+  async fn help_overlay_swallows_other_keys() {
+    let state = test_state();
+    let (tx, mut rx) = mpsc::channel::<IoEvent>(8);
+
+    handle_key(press('?'), &state, &tx).await;
+    handle_key(
+      KeyEvent {
+        code: KeyCode::Char(' '),
+        modifiers: KeyModifiers::NONE,
+        kind: KeyEventKind::Press,
+        state: crossterm::event::KeyEventState::NONE,
+      },
+      &state,
+      &tx,
+    )
+    .await;
+
+    assert!(
+      rx.try_recv().is_err(),
+      "no IoEvent should be dispatched while the overlay is open"
+    );
+    assert!(state.lock().unwrap().help_visible, "overlay stays open");
+  }
 }

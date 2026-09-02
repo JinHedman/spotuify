@@ -20,7 +20,10 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
   );
 
   if state.saved_albums.is_empty() {
-    frame.render_widget(Paragraph::new("(loading…)").block(block), area);
+    frame.render_widget(
+      Paragraph::new(crate::ui::spinner::line("loading…", &theme)).block(block),
+      area,
+    );
     return;
   }
 

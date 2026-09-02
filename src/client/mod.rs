@@ -780,43 +780,63 @@ impl Network {
     Ok(())
   }
 
-  /// Both toggles update `state.playback` locally as well as calling Spotify.
-  /// Without that the indicator would not move until the next poll — up to
-  /// `poll_interval_ms` (3s) later — which reads as the key not working.
   async fn toggle_shuffle(&self) -> Result<()> {
-    let Some((current, device_id)) = self.playback_toggle_target() else {
+    let Some((shuffle, _, device_id)) = self.authoritative_modes().await? else {
       return Ok(());
     };
-    let next = !current.0;
+    let next = !shuffle;
     self.spotify.shuffle(next, device_id.as_deref()).await?;
-    if let Some(p) = self.state.lock().unwrap().playback.as_mut() {
-      p.shuffle_state = next;
-    }
+    self.apply_mode_locally(Some(next), None);
     Ok(())
   }
 
   async fn cycle_repeat(&self) -> Result<()> {
-    let Some((current, device_id)) = self.playback_toggle_target() else {
+    let Some((_, repeat, device_id)) = self.authoritative_modes().await? else {
       return Ok(());
     };
-    let next = match current.1 {
+    let next = match repeat {
       RepeatState::Off => RepeatState::Context,
       RepeatState::Context => RepeatState::Track,
       RepeatState::Track => RepeatState::Off,
     };
     self.spotify.repeat(next, device_id.as_deref()).await?;
-    if let Some(p) = self.state.lock().unwrap().playback.as_mut() {
-      p.repeat_state = next;
-    }
+    self.apply_mode_locally(None, Some(next));
     Ok(())
   }
 
-  /// Current (shuffle, repeat) plus the active device id, or None when nothing
-  /// is playing — there is no session to change in that case.
-  fn playback_toggle_target(&self) -> Option<((bool, RepeatState), Option<String>)> {
+  /// Current (shuffle, repeat, device) read from Spotify rather than from our
+  /// cache, or None when nothing is playing.
+  ///
+  /// The re-read is the point. Shuffle and repeat can be changed from any other
+  /// Spotify client, and our cached copy is up to `poll_interval_ms` (3s) old
+  /// besides. Inverting a stale value makes the first keypress a silent no-op:
+  /// it PUTs the state Spotify is already in, nothing appears to happen, and
+  /// only the second press works. Costs one extra request on a key nobody
+  /// presses in a loop.
+  async fn authoritative_modes(&self) -> Result<Option<(bool, RepeatState, Option<String>)>> {
+    self.get_current_playback().await?;
     let s = self.state.lock().unwrap();
-    let p = s.playback.as_ref()?;
-    Some(((p.shuffle_state, p.repeat_state), p.device.id.clone()))
+    Ok(
+      s.playback
+        .as_ref()
+        .map(|p| (p.shuffle_state, p.repeat_state, p.device.id.clone())),
+    )
+  }
+
+  /// Write the mode we just set into cached playback so the indicator moves
+  /// immediately. Deliberately not `refetch_after_mutation` — that sleeps
+  /// 250ms and re-requests, which would make the key feel sluggish when we
+  /// already know the value we set. A rejected PUT self-heals on the next poll.
+  fn apply_mode_locally(&self, shuffle: Option<bool>, repeat: Option<RepeatState>) {
+    let mut s = self.state.lock().unwrap();
+    if let Some(p) = s.playback.as_mut() {
+      if let Some(v) = shuffle {
+        p.shuffle_state = v;
+      }
+      if let Some(v) = repeat {
+        p.repeat_state = v;
+      }
+    }
   }
 
   async fn get_saved_albums(&self) -> Result<()> {

@@ -27,21 +27,37 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     .get(state.playlists_index)
     .map(|p| p.id.id().to_string());
 
-  let art = state
+  // An entry for the selected playlist means the render has resolved; its
+  // `art` then says whether Spotify actually had a picture. No entry means the
+  // render is still in flight — distinguishing those two is what stops an
+  // in-progress render from being reported as "(no cover)".
+  let entry = state
     .playlist_cover
     .as_ref()
-    .filter(|c| Some(&c.playlist_id) == selected_id.as_ref())
-    .and_then(|c| c.art.as_ref());
+    .filter(|c| Some(&c.playlist_id) == selected_id.as_ref());
+
+  let art = match entry {
+    Some(cover) => cover.art.as_ref(),
+    None => {
+      let placeholder = if state.cover_render_disabled {
+        Paragraph::new(Line::styled(
+          "(ffmpeg not found)",
+          Style::default().fg(theme.hint),
+        ))
+      } else if selected_id.is_none() {
+        Paragraph::new("")
+      } else {
+        // Fetch plus ffmpeg decode on a cache miss is visible work; say so
+        // rather than implying the playlist has no artwork.
+        Paragraph::new(crate::ui::spinner::line("rendering…", &theme))
+      };
+      frame.render_widget(placeholder.centered().block(block), area);
+      return;
+    }
+  };
 
   let Some(art) = art else {
-    let hint = if state.cover_render_disabled {
-      "(ffmpeg not found)"
-    } else if selected_id.is_none() {
-      ""
-    } else {
-      "(no cover)"
-    };
-    let placeholder = Paragraph::new(Line::styled(hint, Style::default().fg(theme.hint)))
+    let placeholder = Paragraph::new(Line::styled("(no cover)", Style::default().fg(theme.hint)))
       .centered()
       .block(block);
     frame.render_widget(placeholder, area);

@@ -23,10 +23,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
 
   let Some(playback) = state.playback.as_ref() else {
     let line = if state.is_loading {
-      Line::from(vec![
-        Span::styled(spinner_frame(now_ms()), Style::default().fg(theme.active)),
-        Span::raw(" Loading…"),
-      ])
+      crate::ui::spinner::line("Loading…", &theme)
     } else {
       Line::raw("Nothing playing. Start Spotify on any device, then press r.")
     };
@@ -115,24 +112,6 @@ fn mode_line<'a>(
   ])
 }
 
-/// Braille spinner, advanced from the wall clock so no frame counter has to be
-/// threaded through state. One step per 100ms — twice the redraw tick, which
-/// keeps motion visible without looking frantic.
-fn spinner_frame(elapsed_ms: u128) -> &'static str {
-  const FRAMES: [&str; 10] = [
-    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
-    "\u{2807}", "\u{280f}",
-  ];
-  FRAMES[(elapsed_ms / 100) as usize % FRAMES.len()]
-}
-
-fn now_ms() -> u128 {
-  std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .map(|d| d.as_millis())
-    .unwrap_or(0)
-}
-
 fn item_display(
   playback: &rspotify::model::context::CurrentPlaybackContext,
 ) -> (String, String, u64) {
@@ -208,32 +187,4 @@ fn format_ms(ms: u64) -> String {
   let minutes = total_secs / 60;
   let seconds = total_secs % 60;
   format!("{minutes}:{seconds:02}")
-}
-
-#[cfg(test)]
-mod tests {
-  use super::spinner_frame;
-
-  #[test]
-  fn spinner_advances_every_100ms_and_cycles() {
-    assert_eq!(spinner_frame(0), spinner_frame(99), "same 100ms window");
-    assert_ne!(spinner_frame(0), spinner_frame(100), "next window differs");
-    assert_eq!(
-      spinner_frame(0),
-      spinner_frame(1000),
-      "wraps after 10 frames"
-    );
-  }
-
-  /// Driven by the wall clock, so it must not panic or index out of bounds on
-  /// arbitrarily large values — this is a real epoch-millis count.
-  #[test]
-  fn spinner_handles_epoch_scale_values() {
-    let mut seen = std::collections::HashSet::new();
-    for step in 0..10u128 {
-      seen.insert(spinner_frame(1_767_225_600_000 + step * 100));
-    }
-    assert_eq!(seen.len(), 10, "all ten frames reachable");
-    assert!(!spinner_frame(u128::MAX).is_empty());
-  }
 }

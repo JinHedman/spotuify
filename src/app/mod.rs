@@ -213,6 +213,9 @@ pub struct AppState {
   pub dialog: Option<Dialog>,
 
   pub help_visible: bool,
+  /// Scroll offset for the help overlay, in lines. Clamped at draw time,
+  /// which is the only place the visible height is known.
+  pub help_scroll: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -278,6 +281,7 @@ impl AppState {
       queue_index: 0,
       dialog: None,
       help_visible: false,
+      help_scroll: 0,
     }
   }
 
