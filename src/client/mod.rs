@@ -87,6 +87,14 @@ impl Network {
 
   pub async fn run(self, mut rx: mpsc::Receiver<IoEvent>) {
     while let Some(event) = rx.recv().await {
+      // Shutdown is a sentinel, not work. Breaking here is what lets the task
+      // finish: dispatching it returns Ok and the loop would go straight back
+      // to recv(), which never yields None while main still holds a sender —
+      // so `network_handle.await` would hang and the process would stay alive
+      // after the terminal had already been restored.
+      if matches!(event, IoEvent::Shutdown) {
+        break;
+      }
       let name = format!("{event:?}");
       if let Err(err) = self.dispatch(event).await {
         warn!(%name, ?err, "network event failed");
@@ -97,6 +105,7 @@ impl Network {
 
   async fn dispatch(&self, event: IoEvent) -> Result<()> {
     match event {
+      // Unreachable in practice — `run` intercepts it before dispatching.
       IoEvent::Shutdown => Ok(()),
       IoEvent::GetCurrentPlayback => self.get_current_playback().await,
       IoEvent::GetPlaylists => self.get_playlists().await,
@@ -1402,6 +1411,40 @@ mod tests {
     let ((tr, _, tb), (br, _, bb)) = art.cells[last];
     assert!(tb > 200 && tr < 60, "top of last row should be blue");
     assert!(bb > 200 && br < 60, "bottom of last row should be blue");
+  }
+
+  /// The quit hang: `run` must return when handed the Shutdown sentinel.
+  /// Dispatching it returns Ok and loops back to recv(), which never yields
+  /// None while a sender is alive — so main's join awaited forever and the
+  /// process stayed up after the terminal was restored.
+  #[tokio::test]
+  async fn run_returns_on_shutdown_even_while_a_sender_is_alive() {
+    use crate::config::user::UserConfig;
+    use rspotify::{Credentials, OAuth};
+
+    // Nonexistent path yields the built-in defaults via the real code path,
+    // so the test needs no Default impl on production types.
+    let cfg = UserConfig::load_or_default(std::path::Path::new(
+      "/nonexistent/spotuify-test-config.yml",
+    ))
+    .unwrap();
+    let state = Arc::new(Mutex::new(AppState::new(Arc::new(cfg))));
+    let spotify = AuthCodeSpotify::new(Credentials::new("id", "secret"), OAuth::default());
+    let network = Network::new(spotify, state);
+
+    let (tx, rx) = mpsc::channel::<IoEvent>(8);
+    let handle = tokio::spawn(network.run(rx));
+
+    tx.send(IoEvent::Shutdown).await.unwrap();
+
+    // `tx` is deliberately still in scope: the channel stays open, so only
+    // the sentinel can end the loop. This is exactly main's situation.
+    let finished = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    assert!(
+      finished.is_ok(),
+      "run() must return on Shutdown while a sender is still alive"
+    );
+    drop(tx);
   }
 
   /// Same artwork must hit even when the URL's expiring query token rotates;

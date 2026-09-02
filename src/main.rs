@@ -34,6 +34,10 @@ const BANNER: &str = r"
   Terminal client for Spotify
 ";
 
+/// How long to wait for the network task to drain after the terminal has been
+/// restored, before giving up and exiting anyway.
+const SHUTDOWN_GRACE: Duration = Duration::from_millis(1500);
+
 #[derive(Parser, Debug)]
 #[command(
   name = "spot",
@@ -87,7 +91,20 @@ async fn main() -> Result<()> {
   ratatui::restore();
 
   let _ = io_tx.send(IoEvent::Shutdown).await;
-  let _ = network_handle.await;
+  // Drop our sender so the channel closes even if the sentinel was missed
+  // (a full channel, or a task that already exited). Without this, `recv()`
+  // in the network task blocks forever and the await below never returns.
+  drop(io_tx);
+  // Bounded: a cover render can be mid-ffmpeg when we quit, and waiting on it
+  // would stall the exit by up to COVER_TIMEOUT. Nothing in the network task
+  // holds unsaved state — cache writes are atomic via rename — so abandoning
+  // it is safe, and a prompt exit matters more than a tidy join.
+  if tokio::time::timeout(SHUTDOWN_GRACE, network_handle)
+    .await
+    .is_err()
+  {
+    tracing::warn!("network task did not stop within {SHUTDOWN_GRACE:?}");
+  }
 
   result
 }
