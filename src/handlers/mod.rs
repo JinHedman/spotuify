@@ -220,6 +220,7 @@ pub async fn handle_key(
       .iter()
       .position(|p| match mode {
         crate::app::ThemeMode::DecadeAuto => p.kind == PresetKind::DecadeAuto,
+        crate::app::ThemeMode::EraAuto => p.kind == PresetKind::EraAuto,
         crate::app::ThemeMode::TimeOfDayAuto => p.kind == PresetKind::TimeOfDayAuto,
         crate::app::ThemeMode::Fixed => p.theme() == Some(fixed),
       })

@@ -46,6 +46,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
           .decade_theme()
           .map(|t| t.active)
           .unwrap_or(theme.active),
+        PresetKind::EraAuto => state.era_theme().map(|t| t.active).unwrap_or(theme.active),
         PresetKind::TimeOfDayAuto => crate::config::daylight::theme_now().active,
         _ => theme.active,
       });
@@ -67,6 +68,10 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
       // colour is explained rather than mysterious.
       let suffix = match p.kind {
         PresetKind::DecadeAuto => match state.decade_label() {
+          Some(label) => format!("  {label}"),
+          None => "  (no year)".to_string(),
+        },
+        PresetKind::EraAuto => match state.era_label() {
           Some(label) => format!("  {label}"),
           None => "  (no year)".to_string(),
         },

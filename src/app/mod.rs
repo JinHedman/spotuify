@@ -45,6 +45,8 @@ pub enum ThemeMode {
   Fixed,
   /// Follows the release decade of whatever is playing.
   DecadeAuto,
+  /// Follows the release decade using the era palettes.
+  EraAuto,
   /// Follows the clock, drifting through the day's palettes.
   TimeOfDayAuto,
 }
@@ -426,6 +428,7 @@ impl AppState {
         }
       }
       PresetKind::DecadeAuto => self.theme_mode = ThemeMode::DecadeAuto,
+      PresetKind::EraAuto => self.theme_mode = ThemeMode::EraAuto,
       PresetKind::TimeOfDayAuto => self.theme_mode = ThemeMode::TimeOfDayAuto,
       // Not a source: moving the cursor onto it must not disturb the theme.
       PresetKind::AfterDark => {}
@@ -447,6 +450,9 @@ impl AppState {
       // to be on before switching to decade mode.
       ThemeMode::DecadeAuto => self
         .decade_theme()
+        .unwrap_or_else(crate::config::presets::default_theme),
+      ThemeMode::EraAuto => self
+        .era_theme()
         .unwrap_or_else(crate::config::presets::default_theme),
       ThemeMode::TimeOfDayAuto => crate::config::daylight::theme_now(),
     };
@@ -488,6 +494,18 @@ impl AppState {
   pub fn decade_label(&self) -> Option<&'static str> {
     let year = self.playing_release_year()?;
     Some(crate::config::presets::palette_for_year(year).label)
+  }
+
+  /// Era-set label for the playing track, e.g. "1950s".
+  pub fn era_label(&self) -> Option<&'static str> {
+    let year = self.playing_release_year()?;
+    Some(crate::config::presets::era_for_year(year).label)
+  }
+
+  /// Era-set palette for the playing track's decade, if its year is known.
+  pub fn era_theme(&self) -> Option<Theme> {
+    let year = self.playing_release_year()?;
+    Some(crate::config::presets::era_for_year(year).theme())
   }
 
   /// Palette for the playing track's decade, if its year can be determined.
@@ -664,7 +682,17 @@ impl AppState {
 #[cfg(test)]
 mod theme_transition_tests {
   use super::*;
-  use crate::config::theme::ThemeCfg;
+
+  /// Shared with `draw_loop_tests`: a theme clearly unlike any bundled
+  /// palette, so inheriting one instead of the intended value shows up.
+  pub(super) fn rgb_theme(v: u8) -> Theme {
+    let base = Theme::from(&crate::config::theme::ThemeCfg::default());
+    Theme {
+      active: ratatui::style::Color::Rgb(v, v, v),
+      progress: ratatui::style::Color::Rgb(v, v, v),
+      ..base
+    }
+  }
   use crate::config::user::UserConfig;
   use ratatui::style::Color;
 
@@ -674,15 +702,6 @@ mod theme_transition_tests {
     ))
     .unwrap();
     AppState::new(Arc::new(cfg))
-  }
-
-  fn rgb_theme(v: u8) -> Theme {
-    let base = Theme::from(&ThemeCfg::default());
-    Theme {
-      active: Color::Rgb(v, v, v),
-      progress: Color::Rgb(v, v, v),
-      ..base
-    }
   }
 
   #[test]
@@ -878,6 +897,7 @@ mod theme_transition_tests {
 
 #[cfg(test)]
 mod draw_loop_tests {
+  use super::theme_transition_tests::rgb_theme;
   use super::*;
   use crate::config::user::UserConfig;
 
@@ -930,6 +950,96 @@ mod draw_loop_tests {
       std::thread::sleep(Duration::from_millis(3));
     }
     panic!("never settled with the warmth modifier active");
+  }
+
+  /// Era mode is a second decade source, so it needs the same guarantees:
+  /// it settles, and it falls back to the default rather than inheriting.
+  #[test]
+  fn era_mode_settles_and_falls_back_to_the_default() {
+    use crate::config::presets::{PresetKind, PRESETS};
+    let mut s = state();
+    let fade = Duration::from_millis(120);
+    let row = PRESETS
+      .iter()
+      .position(|p| p.kind == PresetKind::EraAuto)
+      .expect("the era entry must exist");
+
+    s.theme_fixed = rgb_theme(77);
+    s.select_preset(row, fade);
+    assert_eq!(s.theme_mode, ThemeMode::EraAuto);
+
+    for _ in 0..300 {
+      s.apply_theme_source(fade);
+      s.tick_theme();
+      if !s.theme_transition_active() {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(3));
+    }
+    assert!(!s.theme_transition_active(), "era mode must settle");
+    assert!(s.era_theme().is_none(), "nothing playing, no era");
+    assert_eq!(
+      s.theme,
+      crate::config::presets::default_theme(),
+      "falls back to Spotify Green, not the previous palette"
+    );
+  }
+
+  /// The two decade sets must be independently selectable, and switching
+  /// between them must actually change mode rather than sticking.
+  #[test]
+  fn decade_and_era_modes_are_distinct() {
+    use crate::config::presets::{PresetKind, PRESETS};
+    let mut s = state();
+    let decade = PRESETS
+      .iter()
+      .position(|p| p.kind == PresetKind::DecadeAuto)
+      .unwrap();
+    let era = PRESETS
+      .iter()
+      .position(|p| p.kind == PresetKind::EraAuto)
+      .unwrap();
+    assert_ne!(decade, era, "separate entries");
+
+    s.select_preset(decade, Duration::ZERO);
+    assert_eq!(s.theme_mode, ThemeMode::DecadeAuto);
+    s.select_preset(era, Duration::ZERO);
+    assert_eq!(s.theme_mode, ThemeMode::EraAuto);
+    s.select_preset(decade, Duration::ZERO);
+    assert_eq!(s.theme_mode, ThemeMode::DecadeAuto);
+  }
+
+  /// The same track must resolve differently under the two sets, or one of
+  /// them is silently pointing at the wrong table.
+  #[test]
+  fn the_two_sets_give_different_palettes_for_the_same_year() {
+    let mut s = state();
+    s.playback = Some(playing_from_year("1965"));
+    assert_eq!(s.decade_label(), Some("1960s"));
+    assert_eq!(s.era_label(), Some("1960s"));
+    assert_ne!(
+      s.decade_theme(),
+      s.era_theme(),
+      "1960s differs between the sets — mustard vs psychedelic orange"
+    );
+  }
+
+  fn playing_from_year(date: &str) -> rspotify::model::CurrentPlaybackContext {
+    let raw = serde_json::json!({
+      "device": {
+        "id": "d", "is_active": true, "is_private_session": false,
+        "is_restricted": false, "name": "T", "type": "Computer",
+        "volume_percent": 10
+      },
+      "repeat_state": "off", "shuffle_state": false, "context": null,
+      "timestamp": 1_767_225_600_000i64, "progress_ms": 0, "is_playing": true,
+      "currently_playing_type": "track", "actions": { "disallows": {} },
+      "item": {
+        "name": "X", "uri": "spotify:track:x",
+        "album": { "release_date": date }
+      }
+    });
+    serde_json::from_value(raw).expect("fixture must parse")
   }
 
   /// Same failure mode as the warmth modifier: the day cycle target drifts

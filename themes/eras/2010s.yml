@@ -1,0 +1,10 @@
+# 2010s — greige structure with one loud accent.
+theme:
+  active:       "#ff6b6b"
+  inactive:     "#6b6560"
+  selected_bg:  "#2e2a26"
+  text:         Reset
+  hint:         "#948b82"
+  error:        "#e8453c"
+  progress:     "#22c1b8"
+  playing_icon: "#4ecdc4"

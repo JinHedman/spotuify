@@ -1,0 +1,10 @@
+# 1960s — psychedelic pop: electric orange, turquoise, lime.
+theme:
+  active:       "#ff7a29"
+  inactive:     "#5a5550"
+  selected_bg:  "#221f1b"
+  text:         Reset
+  hint:         "#8f857a"
+  error:        "#e8434f"
+  progress:     "#2fd4a3"
+  playing_icon: "#d8f24a"

@@ -14,6 +14,8 @@ pub enum PresetKind {
   /// Follows the release decade of whatever is playing, falling back to the
   /// default palette when the year is unknown.
   DecadeAuto,
+  /// Follows the release decade like `DecadeAuto`, using the era palettes.
+  EraAuto,
   /// Follows the clock, drifting continuously through the day's palettes.
   TimeOfDayAuto,
   /// Not a theme at all — a toggle for the after-dark warm/dim modifier,
@@ -77,29 +79,89 @@ pub const DECADES: &[DecadePalette] = &[
   },
 ];
 
+/// Era palettes, drawn from documented period colour rather than from how each
+/// decade reads on screen now. Starts a decade earlier than `DECADES`.
+///
+/// Source: https://www.onyxcreative.com/blog/2020/9/popular-color-palettes-by-decade
+pub const ERAS: &[DecadePalette] = &[
+  DecadePalette {
+    decade: 1950,
+    label: "1950s",
+    raw: include_str!("../../themes/eras/1950s.yml"),
+  },
+  DecadePalette {
+    decade: 1960,
+    label: "1960s",
+    raw: include_str!("../../themes/eras/1960s.yml"),
+  },
+  DecadePalette {
+    decade: 1970,
+    label: "1970s",
+    raw: include_str!("../../themes/eras/1970s.yml"),
+  },
+  DecadePalette {
+    decade: 1980,
+    label: "1980s",
+    raw: include_str!("../../themes/eras/1980s.yml"),
+  },
+  DecadePalette {
+    decade: 1990,
+    label: "1990s",
+    raw: include_str!("../../themes/eras/1990s.yml"),
+  },
+  DecadePalette {
+    decade: 2000,
+    label: "2000s",
+    raw: include_str!("../../themes/eras/2000s.yml"),
+  },
+  DecadePalette {
+    decade: 2010,
+    label: "2010s",
+    raw: include_str!("../../themes/eras/2010s.yml"),
+  },
+  DecadePalette {
+    decade: 2020,
+    label: "2020s",
+    raw: include_str!("../../themes/eras/2020s.yml"),
+  },
+];
+
 impl DecadePalette {
   pub fn theme(&self) -> Theme {
     parse(self.raw)
   }
 }
 
-/// Map a release year onto a decade palette.
+/// Map a release year onto a palette from `table`.
 ///
-/// Years outside the table clamp to the nearest end rather than failing: a
-/// 1954 recording gets the 1960s palette, and anything past the newest entry
-/// gets the newest. Returning None would drop the theme back to the fallback,
-/// which reads as the feature being broken rather than approximate.
-pub fn palette_for_year(year: u16) -> &'static DecadePalette {
+/// Years outside the table clamp to the nearest end rather than failing: with
+/// the decade table a 1954 recording gets the 1960s palette, and anything past
+/// the newest entry gets the newest. Returning None would drop the theme back
+/// to the fallback, which reads as the feature being broken rather than
+/// approximate.
+///
+/// Shared by both tables so the clamp is written and tested once, and so a
+/// table that starts at a different decade — Era begins in the 1950s, Decade
+/// in the 1960s — clamps to its own ends rather than a hardcoded one.
+pub fn palette_in(table: &'static [DecadePalette], year: u16) -> &'static DecadePalette {
   let decade = year - (year % 10);
-  let first = &DECADES[0];
-  let last = &DECADES[DECADES.len() - 1];
+  let first = &table[0];
+  let last = &table[table.len() - 1];
   if decade <= first.decade {
     return first;
   }
   if decade >= last.decade {
     return last;
   }
-  DECADES.iter().find(|d| d.decade == decade).unwrap_or(last)
+  table.iter().find(|d| d.decade == decade).unwrap_or(last)
+}
+
+pub fn palette_for_year(year: u16) -> &'static DecadePalette {
+  palette_in(DECADES, year)
+}
+
+pub fn era_for_year(year: u16) -> &'static DecadePalette {
+  palette_in(ERAS, year)
 }
 
 /// The app's default palette. Also the fallback for decade mode when a
@@ -148,6 +210,51 @@ pub const PRESETS: &[Preset] = &[
     name: "Decade — follows the music",
     kind: PresetKind::DecadeAuto,
     raw: "",
+  },
+  Preset {
+    name: "Era — follows the music",
+    kind: PresetKind::EraAuto,
+    raw: "",
+  },
+  Preset {
+    name: "Era · 1950s",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/eras/1950s.yml"),
+  },
+  Preset {
+    name: "Era · 1960s",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/eras/1960s.yml"),
+  },
+  Preset {
+    name: "Era · 1970s",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/eras/1970s.yml"),
+  },
+  Preset {
+    name: "Era · 1980s",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/eras/1980s.yml"),
+  },
+  Preset {
+    name: "Era · 1990s",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/eras/1990s.yml"),
+  },
+  Preset {
+    name: "Era · 2000s",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/eras/2000s.yml"),
+  },
+  Preset {
+    name: "Era · 2010s",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/eras/2010s.yml"),
+  },
+  Preset {
+    name: "Era · 2020s",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/eras/2020s.yml"),
   },
   Preset {
     name: "Time of day — follows the clock",
@@ -212,7 +319,10 @@ impl Preset {
   pub fn theme(&self) -> Option<Theme> {
     match self.kind {
       PresetKind::Fixed => Some(parse(self.raw)),
-      PresetKind::DecadeAuto | PresetKind::TimeOfDayAuto | PresetKind::AfterDark => None,
+      PresetKind::DecadeAuto
+      | PresetKind::EraAuto
+      | PresetKind::TimeOfDayAuto
+      | PresetKind::AfterDark => None,
     }
   }
 }
@@ -240,7 +350,10 @@ mod tests {
         PresetKind::Fixed => {
           assert!(p.theme().is_some(), "{} must yield a theme", p.name);
         }
-        PresetKind::DecadeAuto | PresetKind::TimeOfDayAuto | PresetKind::AfterDark => {
+        PresetKind::DecadeAuto
+        | PresetKind::EraAuto
+        | PresetKind::TimeOfDayAuto
+        | PresetKind::AfterDark => {
           assert!(p.theme().is_none(), "{} has no palette of its own", p.name);
         }
       }
@@ -269,6 +382,73 @@ mod tests {
       assert!(d.decade > prev, "decades must ascend: {}", d.decade);
       assert_eq!(d.decade % 10, 0, "{} is not a decade start", d.decade);
       prev = d.decade;
+    }
+  }
+
+  #[test]
+  fn eras_are_sorted_and_unique() {
+    let mut prev = 0;
+    for e in ERAS {
+      assert!(e.decade > prev, "eras must ascend: {}", e.decade);
+      assert_eq!(e.decade % 10, 0, "{} is not a decade start", e.decade);
+      prev = e.decade;
+    }
+  }
+
+  #[test]
+  fn every_era_palette_parses() {
+    for e in ERAS {
+      let _ = e.theme();
+    }
+  }
+
+  /// The two tables start at different decades, so each must clamp to its own
+  /// ends. A shared hardcoded bound would give one of them the wrong palette.
+  #[test]
+  fn each_table_clamps_to_its_own_range() {
+    assert_eq!(era_for_year(1900).decade, 1950, "era table reaches 1950s");
+    assert_eq!(
+      palette_for_year(1900).decade,
+      1960,
+      "decade table starts at 1960s"
+    );
+    // A year only the era table covers.
+    assert_eq!(era_for_year(1955).decade, 1950);
+    assert_eq!(palette_for_year(1955).decade, 1960, "clamped up");
+  }
+
+  #[test]
+  fn era_years_map_to_their_own_decade() {
+    assert_eq!(era_for_year(1958).decade, 1950);
+    assert_eq!(era_for_year(1967).decade, 1960);
+    assert_eq!(era_for_year(2024).decade, 2020);
+  }
+
+  /// Both sets must be selectable and both auto entries present.
+  #[test]
+  fn both_auto_entries_are_listed() {
+    for kind in [PresetKind::DecadeAuto, PresetKind::EraAuto] {
+      assert!(
+        PRESETS.iter().any(|p| p.kind == kind),
+        "{kind:?} must have a picker entry"
+      );
+    }
+    let era_fixed = PRESETS
+      .iter()
+      .filter(|p| p.kind == PresetKind::Fixed && p.name.starts_with("Era · "))
+      .count();
+    assert_eq!(era_fixed, ERAS.len(), "one fixed entry per era palette");
+  }
+
+  #[test]
+  fn preset_names_are_unique() {
+    let mut seen = std::collections::HashSet::new();
+    for p in PRESETS {
+      assert!(
+        seen.insert(p.name),
+        "duplicate preset name {:?} — index_by_name would be ambiguous",
+        p.name
+      );
     }
   }
 

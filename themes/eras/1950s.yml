@@ -1,0 +1,10 @@
+# 1950s — post-war pastels: coral, mint, butter.
+theme:
+  active:       "#f2a0a0"
+  inactive:     "#6b615c"
+  selected_bg:  "#302b28"
+  text:         Reset
+  hint:         "#9a8d85"
+  error:        "#d9534f"
+  progress:     "#8ed4c0"
+  playing_icon: "#ffd9a3"

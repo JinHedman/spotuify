@@ -1,0 +1,10 @@
+# 2020s — sage and terracotta: 90s revival with muted 70s tones.
+theme:
+  active:       "#8fbc9a"
+  inactive:     "#5c554e"
+  selected_bg:  "#2a2622"
+  text:         Reset
+  hint:         "#8f867c"
+  error:        "#e0687d"
+  progress:     "#e8926b"
+  playing_icon: "#b8d9c0"
