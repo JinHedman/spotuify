@@ -11,6 +11,12 @@ pub struct Behavior {
   pub tick_rate_ms: u64,
   pub volume_step: u8,
   pub seek_step_ms: i64,
+  /// Strength of the after-dark warm/dim shift, 0.0 (off) to 1.0 (full).
+  ///
+  /// Applied on top of whichever theme source is active, so it composes with
+  /// decade mode rather than replacing it. Off by default: dimming the UI on
+  /// a schedule is a preference, not something to spring on people.
+  pub time_of_day_shift: f32,
   /// How long a theme change takes to fade, in milliseconds. 0 snaps.
   ///
   /// Only blends between RGB colours — named colours belong to the terminal
@@ -33,6 +39,7 @@ impl Default for Behavior {
       tick_rate_ms: 200,
       volume_step: 10,
       seek_step_ms: 5000,
+      time_of_day_shift: 0.0,
       theme_transition_ms: 350,
       only_own_playlists: true,
     }

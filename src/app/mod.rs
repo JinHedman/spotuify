@@ -412,10 +412,13 @@ impl AppState {
   /// it costs a short string parse — and a track change into a different
   /// decade starts a fade on its own without anything having to notify us.
   pub fn apply_theme_source(&mut self, duration: Duration) {
-    let target = match self.theme_mode {
+    let base = match self.theme_mode {
       ThemeMode::Fixed => self.theme_fixed,
       ThemeMode::DecadeAuto => self.decade_theme().unwrap_or(self.theme_fixed),
     };
+    // Layered on top of the source rather than replacing it, so decade mode
+    // still picks the palette and this only warms it after dark.
+    let target = self.warmed(base);
     // Never restart a fade that is already heading to this target. This runs
     // every frame, and `set_theme` resets the transition clock, so restarting
     // pins elapsed at ~0 and the fade never advances. With a named colour,
@@ -430,6 +433,15 @@ impl AppState {
       return;
     }
     self.set_theme(target, duration);
+  }
+
+  /// Apply the configured after-dark warmth, if any.
+  fn warmed(&self, theme: Theme) -> Theme {
+    let strength = self.config.behavior.time_of_day_shift;
+    if strength <= 0.0 {
+      return theme;
+    }
+    crate::config::daylight::warm_theme(theme, strength * crate::config::daylight::warmth_now())
   }
 
   /// Label of the decade currently in effect, e.g. "1980s". None when the
@@ -828,6 +840,58 @@ mod draw_loop_tests {
     ))
     .unwrap();
     AppState::new(Arc::new(cfg))
+  }
+
+  fn state_with_warmth(strength: f32) -> AppState {
+    let mut cfg = UserConfig::load_or_default(std::path::Path::new(
+      "/nonexistent/spotuify-test-config.yml",
+    ))
+    .unwrap();
+    cfg.behavior.time_of_day_shift = strength;
+    AppState::new(Arc::new(cfg))
+  }
+
+  /// The time-of-day modifier is recomputed every frame from the wall clock,
+  /// which is the same shape as the bug that froze fades: a target that keeps
+  /// changing restarts the transition forever and it never lands.
+  ///
+  /// Cannot assert the theme is *warmed* — that depends on the clock when the
+  /// test runs, and at midday warmth is legitimately zero. The property that
+  /// must hold at any hour is that it settles.
+  #[test]
+  fn warmth_modifier_still_settles() {
+    let mut s = state_with_warmth(1.0);
+    let fade = Duration::from_millis(120);
+    s.select_preset(1, fade);
+
+    for frame in 0..300 {
+      s.apply_theme_source(fade);
+      s.tick_theme();
+      if !s.theme_transition_active() {
+        // Settled. Confirm it stays settled rather than immediately
+        // re-triggering on the next frame.
+        for _ in 0..20 {
+          s.apply_theme_source(fade);
+          s.tick_theme();
+        }
+        assert!(
+          !s.theme_transition_active(),
+          "settled at frame {frame} then restarted itself"
+        );
+        return;
+      }
+      std::thread::sleep(Duration::from_millis(3));
+    }
+    panic!("never settled with the warmth modifier active");
+  }
+
+  /// Zero strength must be exactly the unmodified source, at any hour.
+  #[test]
+  fn zero_warmth_matches_the_unmodified_source() {
+    use crate::config::presets::PRESETS;
+    let mut s = state_with_warmth(0.0);
+    s.select_preset(1, Duration::ZERO);
+    assert_eq!(s.theme, PRESETS[1].theme().unwrap());
   }
 
   /// Cancelling a preview must survive the next frame. `apply_theme_source`

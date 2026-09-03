@@ -115,6 +115,7 @@ All keys except `Ctrl+C` are remappable via `config.yml` (see below).
 - **Help overlay, Legend bar, error line** — visible affordances.
 - **Responsive layout** — sidebar auto-collapses below ~110 columns; basic playbar-only view when the terminal is very short; a "terminal too small" placeholder below 60×10.
 - **Configurable theme + keybindings** via `$CONFIG_DIR/spotuify/config.yml` (see "Config" below). A few ready-made palettes live in [`themes/`](./themes/).
+- **After-dark warmth** — `behavior.time_of_day_shift` (0.0 off, 1.0 full) warms and dims the palette as the evening draws on: neutral 09:00–17:00, ramping to full by 23:00, holding until 05:00, then ramping back. It is a *modifier*, not a theme, so it layers on top of whatever you have selected — including decade mode. `error` is never warmed, since blunting the one colour whose job is to alarm you would defeat it. Named colours pass through untouched for the same reason fades skip them: their RGB belongs to your terminal.
 - **Decade themes** — the theme picker (`t`) lists seven decade palettes (1960s–2020s) plus **Decade — follows the music**, which re-themes the UI to match the release decade of whatever is playing, fading between them. The picker shows the decade it currently resolves to. Tracks with no usable release date fall back to your previously chosen palette rather than guessing; years outside the table clamp to the nearest end, so a 1955 recording gets the 1960s palette.
 - **Theme fades** — theme changes blend over `behavior.theme_transition_ms` (350ms default, 0 to disable) instead of snapping, and the UI redraws at ~30fps for the duration so the blend reads as motion rather than two steps. Only blends between hex colours: named colours like `DarkGray` belong to your terminal palette, so interpolating them would substitute a guess for your configured colour — those snap at the midpoint instead.
 - **Live theme picker** — press `t` to preview built-in presets on the fly (Spotify Green, Gruvbox Dark, Solarized Dark, Nord, Monokai). Enter applies and persists (writes `$CONFIG_DIR/spotuify/.selected_theme`, which is re-applied on next launch). Esc reverts. Delete `.selected_theme` to go back to your `config.yml` theme, or copy the matching `themes/*.yml` into `config.yml` for a config-tracked change.
@@ -173,6 +174,7 @@ behavior:
   seek_step_ms: 5000          # increment for [/]
   only_own_playlists: true    # hide playlists you follow but didn't create
   theme_transition_ms: 350    # theme fade duration; 0 to snap instantly
+  time_of_day_shift: 0.0      # after-dark warm/dim, 0.0 off … 1.0 full
 
 keybindings:
   # Each action accepts a single key or a list of keys.

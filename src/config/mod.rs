@@ -1,4 +1,5 @@
 pub mod client;
+pub mod daylight;
 pub mod keys;
 pub mod presets;
 pub mod theme;
