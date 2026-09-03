@@ -45,6 +45,8 @@ pub enum ThemeMode {
   Fixed,
   /// Follows the release decade of whatever is playing.
   DecadeAuto,
+  /// Follows the clock, drifting through the day's palettes.
+  TimeOfDayAuto,
 }
 
 /// A fade from one theme to another.
@@ -424,6 +426,7 @@ impl AppState {
         }
       }
       PresetKind::DecadeAuto => self.theme_mode = ThemeMode::DecadeAuto,
+      PresetKind::TimeOfDayAuto => self.theme_mode = ThemeMode::TimeOfDayAuto,
       // Not a source: moving the cursor onto it must not disturb the theme.
       PresetKind::AfterDark => {}
     }
@@ -440,6 +443,7 @@ impl AppState {
     let base = match self.theme_mode {
       ThemeMode::Fixed => self.theme_fixed,
       ThemeMode::DecadeAuto => self.decade_theme().unwrap_or(self.theme_fixed),
+      ThemeMode::TimeOfDayAuto => crate::config::daylight::theme_now(),
     };
     // Layered on top of the source rather than replacing it, so decade mode
     // still picks the palette and this only warms it after dark.
@@ -467,6 +471,11 @@ impl AppState {
       return theme;
     }
     crate::config::daylight::warm_theme(theme, strength * crate::config::daylight::warmth_now())
+  }
+
+  /// Phase of the day currently in effect, e.g. "dusk".
+  pub fn day_phase_label(&self) -> &'static str {
+    crate::config::daylight::label_now()
   }
 
   /// Label of the decade currently in effect, e.g. "1980s". None when the
@@ -908,6 +917,61 @@ mod draw_loop_tests {
       std::thread::sleep(Duration::from_millis(3));
     }
     panic!("never settled with the warmth modifier active");
+  }
+
+  /// Same failure mode as the warmth modifier: the day cycle target drifts
+  /// with the clock, so it must still settle rather than restarting forever.
+  #[test]
+  fn day_cycle_mode_settles() {
+    use crate::config::presets::{PresetKind, PRESETS};
+    let mut s = state();
+    let fade = Duration::from_millis(120);
+    let row = PRESETS
+      .iter()
+      .position(|p| p.kind == PresetKind::TimeOfDayAuto)
+      .expect("the day-cycle entry must exist");
+
+    s.select_preset(row, fade);
+    assert_eq!(s.theme_mode, ThemeMode::TimeOfDayAuto);
+
+    for frame in 0..300 {
+      s.apply_theme_source(fade);
+      s.tick_theme();
+      if !s.theme_transition_active() {
+        for _ in 0..20 {
+          s.apply_theme_source(fade);
+          s.tick_theme();
+        }
+        assert!(
+          !s.theme_transition_active(),
+          "settled at frame {frame} then restarted itself"
+        );
+        return;
+      }
+      std::thread::sleep(Duration::from_millis(3));
+    }
+    panic!("day cycle never settled");
+  }
+
+  /// Switching away from the day cycle must restore the chosen palette, not
+  /// leave the clock in charge.
+  #[test]
+  fn leaving_day_cycle_returns_to_the_fixed_palette() {
+    use crate::config::presets::{PresetKind, PRESETS};
+    let mut s = state();
+    s.select_preset(1, Duration::ZERO);
+    let chosen = s.theme_fixed;
+
+    let row = PRESETS
+      .iter()
+      .position(|p| p.kind == PresetKind::TimeOfDayAuto)
+      .unwrap();
+    s.select_preset(row, Duration::ZERO);
+    assert_eq!(s.theme_mode, ThemeMode::TimeOfDayAuto);
+
+    s.select_preset(1, Duration::ZERO);
+    assert_eq!(s.theme_mode, ThemeMode::Fixed);
+    assert_eq!(s.theme, chosen, "back to the chosen palette");
   }
 
   /// The toggle must not behave like a theme: moving onto it or selecting it

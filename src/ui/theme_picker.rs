@@ -39,11 +39,16 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
       // Small color swatch in the active color of each preset, so you get a
       // preview of each accent before you commit. The auto entry has no
       // palette of its own, so it shows whatever it resolves to right now.
-      let swatch_color = p
-        .theme()
-        .map(|t| t.active)
-        .or_else(|| state.decade_theme().map(|t| t.active))
-        .unwrap_or(theme.active);
+      // Auto entries have no palette of their own, so each shows what it
+      // currently resolves to.
+      let swatch_color = p.theme().map(|t| t.active).unwrap_or(match p.kind {
+        PresetKind::DecadeAuto => state
+          .decade_theme()
+          .map(|t| t.active)
+          .unwrap_or(theme.active),
+        PresetKind::TimeOfDayAuto => crate::config::daylight::theme_now().active,
+        _ => theme.active,
+      });
       // The modifier is a checkbox, not a swatch: it layers on top of the
       // selected theme rather than being one of the alternatives, and using
       // the same marker for both would imply it replaces them.
@@ -60,9 +65,12 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
       }
       // Tell the auto entry what it currently resolves to, so its swatch
       // colour is explained rather than mysterious.
-      let suffix = match (p.kind, state.decade_label()) {
-        (PresetKind::DecadeAuto, Some(label)) => format!("  {label}"),
-        (PresetKind::DecadeAuto, None) => "  (no year)".to_string(),
+      let suffix = match p.kind {
+        PresetKind::DecadeAuto => match state.decade_label() {
+          Some(label) => format!("  {label}"),
+          None => "  (no year)".to_string(),
+        },
+        PresetKind::TimeOfDayAuto => format!("  {}", state.day_phase_label()),
         _ => String::new(),
       };
       ListItem::new(Line::from(vec![

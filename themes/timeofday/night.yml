@@ -1,0 +1,10 @@
+# 22:00 — night: indigo.
+theme:
+  active:       "#6b7fd7"
+  inactive:     "#454a6b"
+  selected_bg:  "#1f2338"
+  text:         Reset
+  hint:         "#7b81a8"
+  error:        "#e05070"
+  progress:     "#8593e8"
+  playing_icon: "#a3aef5"

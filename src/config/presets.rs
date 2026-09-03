@@ -2,8 +2,8 @@ use super::theme::{Theme, ThemeCfg};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
-struct Wrapper {
-  theme: ThemeCfg,
+pub struct ThemeWrapper {
+  pub theme: ThemeCfg,
 }
 
 /// What selecting a preset does.
@@ -14,6 +14,8 @@ pub enum PresetKind {
   /// Follows the release decade of whatever is playing, falling back to the
   /// previously chosen fixed theme when the year is unknown.
   DecadeAuto,
+  /// Follows the clock, drifting continuously through the day's palettes.
+  TimeOfDayAuto,
   /// Not a theme at all — a toggle for the after-dark warm/dim modifier,
   /// which layers on top of whichever theme is selected. Listed here so it is
   /// discoverable in the same place people go to change how the app looks.
@@ -137,6 +139,11 @@ pub const PRESETS: &[Preset] = &[
     raw: "",
   },
   Preset {
+    name: "Time of day — follows the clock",
+    kind: PresetKind::TimeOfDayAuto,
+    raw: "",
+  },
+  Preset {
     name: "After dark — warm at night",
     kind: PresetKind::AfterDark,
     raw: "",
@@ -179,7 +186,7 @@ pub const PRESETS: &[Preset] = &[
 ];
 
 fn parse(raw: &str) -> Theme {
-  let wrapper: Wrapper = serde_yaml::from_str(raw).expect("bundled preset theme must parse");
+  let wrapper: ThemeWrapper = serde_yaml::from_str(raw).expect("bundled preset theme must parse");
   Theme::from(&wrapper.theme)
 }
 
@@ -194,7 +201,7 @@ impl Preset {
   pub fn theme(&self) -> Option<Theme> {
     match self.kind {
       PresetKind::Fixed => Some(parse(self.raw)),
-      PresetKind::DecadeAuto | PresetKind::AfterDark => None,
+      PresetKind::DecadeAuto | PresetKind::TimeOfDayAuto | PresetKind::AfterDark => None,
     }
   }
 }
@@ -222,7 +229,7 @@ mod tests {
         PresetKind::Fixed => {
           assert!(p.theme().is_some(), "{} must yield a theme", p.name);
         }
-        PresetKind::DecadeAuto | PresetKind::AfterDark => {
+        PresetKind::DecadeAuto | PresetKind::TimeOfDayAuto | PresetKind::AfterDark => {
           assert!(p.theme().is_none(), "{} has no palette of its own", p.name);
         }
       }

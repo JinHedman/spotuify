@@ -1,0 +1,10 @@
+# 19:00 — dusk: orange burning into magenta.
+theme:
+  active:       "#f2683c"
+  inactive:     "#6b4553"
+  selected_bg:  "#3a2230"
+  text:         Reset
+  hint:         "#a3717f"
+  error:        "#ff5468"
+  progress:     "#ff8a5c"
+  playing_icon: "#ffa87a"

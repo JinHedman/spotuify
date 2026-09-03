@@ -1,0 +1,10 @@
+# 02:00 — small hours: deep muted blue, the quietest point.
+theme:
+  active:       "#4a5b8c"
+  inactive:     "#33374d"
+  selected_bg:  "#191c2b"
+  text:         Reset
+  hint:         "#5f6580"
+  error:        "#b8465e"
+  progress:     "#5a6da8"
+  playing_icon: "#6f83bd"
