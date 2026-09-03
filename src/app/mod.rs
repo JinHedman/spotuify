@@ -105,6 +105,12 @@ pub struct ThemeTransition {
 pub const COVER_COLS: u16 = 24;
 pub const COVER_ROWS: u16 = 12;
 
+/// Now-playing thumbnail in the playbar. 8x3 cells is 8x6 pixels — far too
+/// small to recognise a cover, which the half-block evaluation established,
+/// but enough to carry the album's colour beside the title.
+pub const NOWPLAYING_COLS: u16 = 8;
+pub const NOWPLAYING_ROWS: u16 = 3;
+
 /// One rendered cover: `COVER_ROWS * COVER_COLS` cells, row-major, each a
 /// (top, bottom) RGB pair.
 #[derive(Clone, Debug)]
@@ -116,13 +122,18 @@ pub struct CoverArt {
 
 pub type Rgb = (u8, u8, u8);
 
-/// What we know about the selected playlist's cover. `art: None` means we
-/// looked and Spotify had no image — distinct from `playlist_cover: None`,
-/// which means we have not looked yet. Keeping them apart stops the network
-/// task from re-spawning ffmpeg for a playlist that will never have art.
+/// A resolved cover and what it belongs to.
+///
+/// `art: None` means we looked and Spotify had no image — distinct from the
+/// whole field being None, which means we have not looked yet. Keeping them
+/// apart stops the network task from re-spawning ffmpeg for something that
+/// will never have art.
+///
+/// `id` is a playlist id for the sidebar cover and a track or episode URI for
+/// the playbar one; both are compared only against themselves.
 #[derive(Clone, Debug)]
-pub struct PlaylistCover {
-  pub playlist_id: String,
+pub struct CachedCover {
+  pub id: String,
   pub art: Option<CoverArt>,
 }
 
@@ -172,6 +183,16 @@ impl TrackRow {
 fn parse_release_year(raw: &str) -> Option<u16> {
   let year: u16 = raw.get(..4)?.parse().ok()?;
   (1000..=2999).contains(&year).then_some(year)
+}
+
+/// Narrowest image in the list. Spotify orders them largest-first, but
+/// `width` is nullable, so an unknown width must not win the minimum.
+fn smallest_image(images: &[rspotify::model::Image]) -> Option<String> {
+  images
+    .iter()
+    .min_by_key(|i| i.width.unwrap_or(u32::MAX))
+    .or_else(|| images.last())
+    .map(|i| i.url.clone())
 }
 
 fn join_artist_names<'a, I: Iterator<Item = &'a str>>(iter: I) -> String {
@@ -259,7 +280,9 @@ pub struct AppState {
   /// instead of silently showing a short list.
   pub playlists_hidden: usize,
   /// Rendered cover for the currently selected playlist, if any.
-  pub playlist_cover: Option<PlaylistCover>,
+  pub playlist_cover: Option<CachedCover>,
+  /// Cover for whatever is playing, keyed by its URI.
+  pub now_playing_cover: Option<CachedCover>,
   /// Covers already rendered this session, keyed by artwork id (not playlist
   /// id, so changing a playlist's picture invalidates naturally). Each entry
   /// is `COVER_COLS * COVER_ROWS * 6` bytes — under 2 KB — so even the 10k
@@ -358,6 +381,7 @@ impl AppState {
       playlists_offset: 0,
       playlists_hidden: 0,
       playlist_cover: None,
+      now_playing_cover: None,
       cover_cache: HashMap::new(),
       cover_render_disabled: false,
       track_list: Vec::new(),
@@ -532,6 +556,35 @@ impl AppState {
   pub fn decade_label(&self) -> Option<&'static str> {
     let year = self.playing_release_year()?;
     Some(crate::config::presets::palette_for_year(year).label)
+  }
+
+  /// Smallest cover image URL for whatever is playing.
+  ///
+  /// Tracks carry images on the album, episodes on the show. `Unknown` items
+  /// are read out of the raw JSON for the same reason `playing_uri` is: the
+  /// untagged fallback is reached in practice, and skipping it would mean the
+  /// playbar cover silently never appearing for those tracks.
+  pub fn playing_image_url(&self) -> Option<String> {
+    let item = self.playback.as_ref()?.item.as_ref()?;
+    match item {
+      PlayableItem::Track(t) => smallest_image(&t.album.images),
+      PlayableItem::Episode(e) => smallest_image(&e.show.images),
+      PlayableItem::Unknown(json) => json
+        .get("album")
+        .and_then(|a| a.get("images"))
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+          arr
+            .iter()
+            .filter_map(|i| {
+              let url = i.get("url")?.as_str()?.to_string();
+              let width = i.get("width").and_then(|w| w.as_u64()).unwrap_or(u64::MAX);
+              Some((width, url))
+            })
+            .min_by_key(|(w, _)| *w)
+            .map(|(_, url)| url)
+        }),
+    }
   }
 
   /// Era-set label for the playing track, e.g. "1950s".

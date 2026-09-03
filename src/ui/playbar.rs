@@ -1,6 +1,7 @@
-use crate::app::AppState;
+use crate::app::{AppState, NOWPLAYING_COLS};
 use ratatui::{
   layout::{Constraint, Direction, Layout, Rect},
+  style::Color,
   style::{Modifier, Style},
   text::{Line, Span},
   widgets::{Block, Borders, Gauge, Paragraph},
@@ -31,26 +32,61 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     return;
   };
 
-  let rows = Layout::new(
-    Direction::Vertical,
-    [Constraint::Length(1), Constraint::Length(1)],
+  // Layout D: cover on the left, metadata in its own column, playback state
+  // grouped on the right. Three content rows rather than two — the extra row
+  // comes out of the content area above.
+  let cols = Layout::new(
+    Direction::Horizontal,
+    [
+      Constraint::Length(NOWPLAYING_COLS + 2),
+      Constraint::Min(20),
+      Constraint::Length(RIGHT_WIDTH),
+    ],
   )
   .split(inner);
 
-  let (title, subtitle, duration_ms) = item_display(playback);
+  draw_thumbnail(frame, cols[0], state, &theme);
+
+  let (title, subtitle, album_line, duration_ms) = item_display(playback);
+
+  let meta = Layout::new(
+    Direction::Vertical,
+    [
+      Constraint::Length(1),
+      Constraint::Length(1),
+      Constraint::Length(1),
+    ],
+  )
+  .split(cols[1]);
 
   let icon = if playback.is_playing { "▶" } else { "⏸" };
-  let vol = playback.device.volume_percent.unwrap_or(0);
-  let header = Line::from(vec![
-    Span::styled(icon, Style::default().fg(theme.playing_icon)),
-    Span::raw("  "),
-    Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
-    Span::raw("  "),
-    Span::styled(subtitle, Style::default().fg(theme.hint)),
-    Span::raw("   "),
-    Span::styled(format!("vol {vol}%"), volume_style(state, &theme)),
-  ]);
-  frame.render_widget(Paragraph::new(header), rows[0]);
+  frame.render_widget(
+    Paragraph::new(Line::from(vec![
+      Span::styled(icon, Style::default().fg(theme.playing_icon)),
+      Span::raw(" "),
+      Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
+    ])),
+    meta[0],
+  );
+  frame.render_widget(
+    Paragraph::new(Line::styled(subtitle, Style::default().fg(theme.hint))),
+    meta[1],
+  );
+  frame.render_widget(
+    Paragraph::new(Line::styled(album_line, Style::default().fg(theme.hint))),
+    meta[2],
+  );
+
+  // Right column: clock, bar, then modes and volume.
+  let right = Layout::new(
+    Direction::Vertical,
+    [
+      Constraint::Length(1),
+      Constraint::Length(1),
+      Constraint::Length(1),
+    ],
+  )
+  .split(cols[2]);
 
   let progress_ms = state
     .extrapolated_progress_ms()
@@ -61,31 +97,92 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
   } else {
     0.0
   };
-  let label = format!("{}  /  {}", format_ms(progress_ms), format_ms(duration_ms));
 
-  // Indicators sit on the timeline row, right-aligned, so the eye finds
-  // playback state in one place.
-  let bar = Layout::new(
-    Direction::Horizontal,
-    [Constraint::Min(10), Constraint::Length(MODE_WIDTH)],
-  )
-  .split(rows[1]);
+  frame.render_widget(
+    Paragraph::new(Line::styled(
+      format!("{} / {}", format_ms(progress_ms), format_ms(duration_ms)),
+      Style::default().fg(theme.hint),
+    ))
+    .right_aligned(),
+    right[0],
+  );
 
   let gauge = Gauge::default()
     .gauge_style(Style::default().fg(theme.progress))
-    // Without this the bar snaps a whole cell at a time, throwing away the
-    // sub-second smoothing that `extrapolated_progress_ms` exists to provide.
-    // Unicode eighth-blocks give eight times the horizontal resolution.
+    // Sub-cell resolution, so the extrapolated progress reads as motion
+    // rather than snapping a whole cell at a time.
     .use_unicode(true)
     .ratio(ratio)
-    .label(label);
-  frame.render_widget(gauge, bar[0]);
-  frame.render_widget(Paragraph::new(mode_line(playback, &theme)), bar[1]);
+    .label("");
+  frame.render_widget(gauge, right[1]);
+
+  let vol = playback.device.volume_percent.unwrap_or(0);
+  let mut state_line = mode_line(playback, &theme).spans;
+  state_line.push(Span::raw("  "));
+  state_line.push(Span::styled(
+    format!("vol {vol}%"),
+    volume_style(state, &theme),
+  ));
+  frame.render_widget(
+    Paragraph::new(Line::from(state_line)).right_aligned(),
+    right[2],
+  );
 }
 
-/// Width reserved for the shuffle/repeat indicators: leading space, shuffle
-/// glyph, gap, repeat glyph, and the `1` suffix for track-repeat.
-const MODE_WIDTH: u16 = 6;
+/// Width of the right-hand column: the widest thing in it is the clock,
+/// `-00:00 / 00:00`, plus the mode glyphs and volume beneath.
+const RIGHT_WIDTH: u16 = 18;
+
+/// The playbar thumbnail, or nothing when there is no art to show.
+///
+/// Silent when absent: the playbar is not the place to explain a missing
+/// cover, and a placeholder would draw the eye to the one thing that has
+/// nothing to say.
+fn draw_thumbnail(
+  frame: &mut Frame,
+  area: Rect,
+  state: &AppState,
+  theme: &crate::config::theme::Theme,
+) {
+  let playing_uri = state.playing_uri();
+  let art = state
+    .now_playing_cover
+    .as_ref()
+    .filter(|c| Some(&c.id) == playing_uri.as_ref())
+    .and_then(|c| c.art.as_ref());
+
+  let Some(art) = art else {
+    return;
+  };
+
+  let lines: Vec<Line> = (0..art.rows as usize)
+    .map(|row| {
+      Line::from(
+        (0..art.cols as usize)
+          .filter_map(|col| art.cells.get(row * art.cols as usize + col))
+          .map(|&((tr, tg, tb), (br, bg, bb))| {
+            Span::styled(
+              "\u{2580}",
+              Style::default()
+                .fg(Color::Rgb(tr, tg, tb))
+                .bg(Color::Rgb(br, bg, bb)),
+            )
+          })
+          .collect::<Vec<_>>(),
+      )
+    })
+    .collect();
+
+  let _ = theme;
+  let width = art.cols.min(area.width);
+  let target = Rect {
+    x: area.x,
+    y: area.y,
+    width,
+    height: art.rows.min(area.height),
+  };
+  frame.render_widget(Paragraph::new(lines), target);
+}
 
 /// Shuffle and repeat state, always rendered — dim when off rather than
 /// hidden, so the glyphs never move and their absence can't be mistaken for
@@ -126,9 +223,10 @@ fn volume_style(state: &AppState, theme: &crate::config::theme::Theme) -> Style 
   Style::default().fg(colour).add_modifier(Modifier::BOLD)
 }
 
+/// (title, artist line, album line, duration) for the three metadata rows.
 fn item_display(
   playback: &rspotify::model::context::CurrentPlaybackContext,
-) -> (String, String, u64) {
+) -> (String, String, String, u64) {
   match &playback.item {
     Some(PlayableItem::Track(t)) => {
       let artists = t
@@ -137,15 +235,31 @@ fn item_display(
         .map(|a| a.name.clone())
         .collect::<Vec<_>>()
         .join(", ");
+      // Album year comes free: release_date is already fetched for decade mode.
+      let year = t
+        .album
+        .release_date
+        .as_deref()
+        .and_then(|d| d.get(..4))
+        .unwrap_or_default();
+      let album = if year.is_empty() {
+        t.album.name.clone()
+      } else {
+        format!("{} · {year}", t.album.name)
+      };
       (
         t.name.clone(),
-        format!("{artists} — {}", t.album.name),
+        artists,
+        album,
         t.duration.num_milliseconds().max(0) as u64,
       )
     }
     Some(PlayableItem::Episode(e)) => (
       e.name.clone(),
       e.show.name.clone(),
+      // Not `show.publisher` — Spotify removed that field and rspotify has it
+      // deprecated. The episode's own date is the useful third line anyway.
+      e.release_date.clone(),
       e.duration.num_milliseconds().max(0) as u64,
     ),
     Some(PlayableItem::Unknown(json)) => unknown_from_json(json),
@@ -155,12 +269,12 @@ fn item_display(
         CurrentlyPlayingType::Unknown => "(unknown)",
         _ => "(between tracks)",
       };
-      (label.to_string(), String::new(), 0)
+      (label.to_string(), String::new(), String::new(), 0)
     }
   }
 }
 
-fn unknown_from_json(json: &Value) -> (String, String, u64) {
+fn unknown_from_json(json: &Value) -> (String, String, String, u64) {
   let name = json
     .get("name")
     .and_then(|v| v.as_str())
@@ -187,13 +301,7 @@ fn unknown_from_json(json: &Value) -> (String, String, u64) {
     .get("duration_ms")
     .and_then(|v| v.as_u64())
     .unwrap_or(0);
-  let subtitle = match (artists.is_empty(), album.is_empty()) {
-    (false, false) => format!("{artists} — {album}"),
-    (false, true) => artists,
-    (true, false) => album,
-    (true, true) => String::new(),
-  };
-  (name, subtitle, duration_ms)
+  (name, artists, album, duration_ms)
 }
 
 fn format_ms(ms: u64) -> String {
@@ -201,4 +309,153 @@ fn format_ms(ms: u64) -> String {
   let minutes = total_secs / 60;
   let seconds = total_secs % 60;
   format!("{minutes}:{seconds:02}")
+}
+
+#[cfg(test)]
+mod tests {
+  use super::draw;
+  use crate::app::{AppState, CachedCover, CoverArt, NOWPLAYING_COLS, NOWPLAYING_ROWS};
+  use crate::config::user::UserConfig;
+  use ratatui::{backend::TestBackend, Terminal};
+  use std::sync::Arc;
+
+  fn state() -> AppState {
+    let cfg = UserConfig::load_or_default(std::path::Path::new(
+      "/nonexistent/spotuify-test-config.yml",
+    ))
+    .unwrap();
+    AppState::new(Arc::new(cfg))
+  }
+
+  fn render(state: &AppState, width: u16, height: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|f| draw(f, f.area(), state)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (0..buf.area.height)
+      .map(|y| {
+        (0..buf.area.width)
+          .map(|x| buf[(x, y)].symbol().to_string())
+          .collect::<String>()
+      })
+      .collect::<Vec<_>>()
+      .join("\n")
+  }
+
+  fn playing(uri: &str) -> rspotify::model::CurrentPlaybackContext {
+    let id = uri.rsplit(':').next().unwrap();
+    serde_json::from_value(serde_json::json!({
+      "device": {
+        "id": "d", "is_active": true, "is_private_session": false,
+        "is_restricted": false, "name": "T", "type": "Computer",
+        "volume_percent": 50
+      },
+      "repeat_state": "off", "shuffle_state": true, "context": null,
+      "timestamp": 1_767_225_600_000i64, "progress_ms": 84_000,
+      "is_playing": true, "currently_playing_type": "track",
+      "actions": { "disallows": {} },
+      "item": {
+        "album": {
+          "album_type": "album", "artists": [], "external_urls": {},
+          "href": null, "id": null, "images": [], "name": "Rumours",
+          "release_date": "1977-02-04", "release_date_precision": "day",
+          "album_group": null, "restrictions": null, "type": "album",
+          "uri": "spotify:album:x", "total_tracks": 11
+        },
+        "artists": [],
+        "disc_number": 1, "duration_ms": 254_000, "explicit": false,
+        "external_ids": {}, "external_urls": {}, "href": null,
+        "id": id, "is_local": false, "is_playable": true,
+        "linked_from": null, "restrictions": null, "name": "Dreams",
+        "popularity": 1, "preview_url": null, "track_number": 1,
+        "type": "track", "uri": uri
+      }
+    }))
+    .expect("fixture must parse")
+  }
+
+  fn art(cols: u16, rows: u16) -> CoverArt {
+    CoverArt {
+      cols,
+      rows,
+      cells: (0..cols as usize * rows as usize)
+        .map(|i| {
+          let n = i as u8;
+          ((n, 40, 90), (n, 60, 120))
+        })
+        .collect(),
+    }
+  }
+
+  /// All three metadata rows must reach the screen, including the album year
+  /// that layout D adds.
+  #[test]
+  fn all_three_metadata_rows_render() {
+    let mut s = state();
+    s.playback = Some(playing("spotify:track:abc"));
+    let out = render(&s, 90, 5);
+    assert!(out.contains("Dreams"), "title:\n{out}");
+    assert!(out.contains("Rumours"), "album:\n{out}");
+    assert!(out.contains("1977"), "year from release_date:\n{out}");
+    assert!(out.contains("1:24"), "elapsed:\n{out}");
+    assert!(out.contains("4:14"), "duration:\n{out}");
+    assert!(out.contains("vol 50%"), "volume:\n{out}");
+    assert!(out.contains('\u{21c4}'), "shuffle indicator:\n{out}");
+  }
+
+  /// The thumbnail draws only when its art belongs to what is playing — a
+  /// stale cover outliving a track change would be worse than none.
+  #[test]
+  fn thumbnail_draws_only_for_the_playing_track() {
+    const HALF: char = '\u{2580}';
+    let mut s = state();
+    s.playback = Some(playing("spotify:track:abc"));
+
+    // Art for a different track.
+    s.now_playing_cover = Some(CachedCover {
+      id: "spotify:track:other".to_string(),
+      art: Some(art(NOWPLAYING_COLS, NOWPLAYING_ROWS)),
+    });
+    let out = render(&s, 90, 5);
+    assert!(!out.contains(HALF), "stale cover must not draw:\n{out}");
+
+    // Art for the right one.
+    s.now_playing_cover = Some(CachedCover {
+      id: "spotify:track:abc".to_string(),
+      art: Some(art(NOWPLAYING_COLS, NOWPLAYING_ROWS)),
+    });
+    let out = render(&s, 90, 5);
+    assert!(out.contains(HALF), "matching cover must draw:\n{out}");
+  }
+
+  /// No art is a normal state and must stay silent — the metadata still has
+  /// to render around the gap.
+  #[test]
+  fn a_missing_thumbnail_is_silent() {
+    let mut s = state();
+    s.playback = Some(playing("spotify:track:abc"));
+    s.now_playing_cover = Some(CachedCover {
+      id: "spotify:track:abc".to_string(),
+      art: None,
+    });
+    let out = render(&s, 90, 5);
+    assert!(!out.contains('\u{2580}'), "no cover drawn");
+    assert!(out.contains("Dreams"), "metadata still renders:\n{out}");
+  }
+
+  /// The pane is five rows including borders; nothing may spill onto them.
+  #[test]
+  fn content_stays_inside_the_border() {
+    let mut s = state();
+    s.playback = Some(playing("spotify:track:abc"));
+    s.now_playing_cover = Some(CachedCover {
+      id: "spotify:track:abc".to_string(),
+      art: Some(art(NOWPLAYING_COLS, NOWPLAYING_ROWS)),
+    });
+    let out = render(&s, 90, 5);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 5, "five rows total");
+    assert!(!lines[0].contains('\u{2580}'), "cover on the top border");
+    assert!(!lines[4].contains('\u{2580}'), "cover on the bottom border");
+    assert!(lines[4].contains('\u{2514}'), "bottom-left corner intact");
+  }
 }

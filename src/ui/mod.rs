@@ -43,6 +43,10 @@ const BANNER_MIN_WIDTH: u16 = 80;
 /// Width of the left column (sidebar below, banner above). Kept constant so
 /// the banner lines up with the Library / Playlists boxes under it.
 const SIDEBAR_WIDTH: u16 = 38;
+/// Playbar: three content rows plus its border. The extra row over the old
+/// two-row layout is taken from the content area above, which is what the
+/// cover thumbnail and grouped playback state buy.
+const PLAYBAR_HEIGHT: u16 = 5;
 /// Playlist rows that must survive before the cover box earns its space.
 const MIN_PLAYLIST_ROWS: u16 = 8;
 /// Cover art plus its border.
@@ -88,7 +92,7 @@ pub fn draw(frame: &mut Frame, state: &Arc<Mutex<AppState>>) {
     [
       Constraint::Length(header_height),
       Constraint::Min(1),
-      Constraint::Length(4),
+      Constraint::Length(PLAYBAR_HEIGHT),
       Constraint::Length(1),
     ],
   )

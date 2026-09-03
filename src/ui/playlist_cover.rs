@@ -34,7 +34,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
   let entry = state
     .playlist_cover
     .as_ref()
-    .filter(|c| Some(&c.playlist_id) == selected_id.as_ref());
+    .filter(|c| Some(&c.id) == selected_id.as_ref());
 
   let art = match entry {
     Some(cover) => cover.art.as_ref(),
