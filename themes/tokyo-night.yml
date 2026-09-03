@@ -1,0 +1,10 @@
+# Tokyo Night — blue accent over deep navy.
+theme:
+  active:       "#7aa2f7"
+  inactive:     "#565f89"
+  selected_bg:  "#292e42"
+  text:         Reset
+  hint:         "#7982a9"
+  error:        "#f7768e"
+  progress:     "#9ece6a"
+  playing_icon: "#bb9af7"

@@ -1,0 +1,10 @@
+# Dracula — purple accent, green progress, cyan marker.
+theme:
+  active:       "#bd93f9"
+  inactive:     "#6272a4"
+  selected_bg:  "#44475a"
+  text:         Reset
+  hint:         "#8be9fd"
+  error:        "#ff5555"
+  progress:     "#50fa7b"
+  playing_icon: "#ff79c6"

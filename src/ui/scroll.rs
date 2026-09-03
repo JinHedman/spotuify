@@ -44,6 +44,49 @@ pub fn adjust_offset(
   }
 }
 
+/// Draw a position indicator down the right edge of `area`, but only when the
+/// list actually overflows.
+///
+/// Always-visible scrollbars on short lists are noise; the useful signal is
+/// "there is more than you can see", so absence carries meaning too.
+///
+/// `area` is the bordered pane. The bar is inset by one cell so it sits inside
+/// the frame rather than overwriting it.
+pub fn render(
+  frame: &mut ratatui::Frame,
+  area: ratatui::layout::Rect,
+  offset: usize,
+  visible: usize,
+  item_count: usize,
+  theme: &crate::config::theme::Theme,
+) {
+  use ratatui::layout::{Margin, Rect};
+  use ratatui::style::Style;
+  use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
+
+  if item_count <= visible || visible == 0 || area.height < 3 || area.width < 3 {
+    return;
+  }
+
+  let inner: Rect = area.inner(Margin {
+    horizontal: 0,
+    vertical: 1,
+  });
+
+  let mut scroll_state = ScrollbarState::new(item_count.saturating_sub(visible))
+    .position(offset)
+    .viewport_content_length(visible);
+
+  let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+    .begin_symbol(None)
+    .end_symbol(None)
+    .track_symbol(None)
+    .thumb_symbol("\u{2503}")
+    .thumb_style(Style::default().fg(theme.inactive));
+
+  frame.render_stateful_widget(bar, inner, &mut scroll_state);
+}
+
 #[cfg(test)]
 mod tests {
   use super::adjust_offset;

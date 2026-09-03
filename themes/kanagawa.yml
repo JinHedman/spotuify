@@ -1,0 +1,10 @@
+# Kanagawa — crystal blue accent, spring green progress.
+theme:
+  active:       "#7e9cd8"
+  inactive:     "#727169"
+  selected_bg:  "#2a2a37"
+  text:         Reset
+  hint:         "#9a9689"
+  error:        "#e82424"
+  progress:     "#98bb6c"
+  playing_icon: "#7aa89f"

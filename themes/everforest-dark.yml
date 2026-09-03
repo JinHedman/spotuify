@@ -1,0 +1,10 @@
+# Everforest Dark — muted green accent on a warm grey base.
+theme:
+  active:       "#a7c080"
+  inactive:     "#859289"
+  selected_bg:  "#343f44"
+  text:         Reset
+  hint:         "#9da9a0"
+  error:        "#e67e80"
+  progress:     "#83c092"
+  playing_icon: "#dbbc7f"

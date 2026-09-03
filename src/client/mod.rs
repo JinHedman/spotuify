@@ -1,4 +1,7 @@
-use crate::app::{AppState, CoverArt, PlaylistCover, Rgb, TrackRow, COVER_COLS, COVER_ROWS};
+use crate::app::{
+  AppState, CachedCover, CoverArt, Rgb, TrackRow, COVER_COLS, COVER_ROWS, NOWPLAYING_COLS,
+  NOWPLAYING_ROWS,
+};
 use anyhow::{Context, Result};
 use rspotify::model::playlist::SimplifiedPlaylist;
 use rspotify::model::{
@@ -202,12 +205,17 @@ impl Network {
       .spotify
       .current_playback(None, Some(&additional_types))
       .await?;
-    let mut state = self.state.lock().unwrap();
-    state.playback = playback;
-    state.playback_received_at = Some(std::time::Instant::now());
-    state.is_loading = false;
-    state.last_error = None;
-    Ok(())
+    // Scoped: the guard cannot be held across the await below.
+    {
+      let mut state = self.state.lock().unwrap();
+      state.playback = playback;
+      state.playback_received_at = Some(std::time::Instant::now());
+      state.is_loading = false;
+      state.last_error = None;
+    }
+    // Keyed on the playing URI, so this no-ops on the 3s poll and only does
+    // work when the track actually changes.
+    self.refresh_now_playing_cover().await
   }
 
   async fn get_playlists(&self) -> Result<()> {
@@ -316,11 +324,7 @@ impl Network {
       let id = playlist.id.id().to_string();
       // Already resolved for this playlist — this is what makes a burst of
       // queued refreshes collapse instead of re-spawning ffmpeg per keypress.
-      if s
-        .playlist_cover
-        .as_ref()
-        .is_some_and(|c| c.playlist_id == id)
-      {
+      if s.playlist_cover.as_ref().is_some_and(|c| c.id == id) {
         return Ok(());
       }
       smallest_image_url(&playlist.images).map(|url| (id, url))
@@ -331,15 +335,12 @@ impl Network {
       let mut s = self.state.lock().unwrap();
       if let Some(playlist) = s.playlists.get(s.playlists_index) {
         let id = playlist.id.id().to_string();
-        s.playlist_cover = Some(PlaylistCover {
-          playlist_id: id,
-          art: None,
-        });
+        s.playlist_cover = Some(CachedCover { id, art: None });
       }
       return Ok(());
     };
 
-    let key = cover_cache_key(&url);
+    let key = cover_cache_key(&url, COVER_COLS, COVER_ROWS);
 
     // Tier 1: already rendered this session. Costs a hash lookup, so scrolling
     // back over playlists you have already visited never touches ffmpeg.
@@ -353,7 +354,7 @@ impl Network {
 
     // Tier 2: rendered by an earlier run. Under 2 KB per read, so this is far
     // cheaper than a CDN fetch plus an ffmpeg spawn on every startup.
-    if let Some(art) = read_cached_cover(&key).await {
+    if let Some(art) = read_cached_cover(&key, COVER_COLS, COVER_ROWS).await {
       self
         .state
         .lock()
@@ -364,7 +365,7 @@ impl Network {
       return Ok(());
     }
 
-    let art = match render_cover(&url).await {
+    let art = match render_cover(&url, COVER_COLS, COVER_ROWS).await {
       Ok(art) => {
         // Best effort: a cache we cannot write is a slow cache, not an error.
         if let Err(err) = write_cached_cover(&key, &art).await {
@@ -396,6 +397,97 @@ impl Network {
     Ok(())
   }
 
+  /// Resolve a cover through both cache tiers, rendering only on a miss.
+  ///
+  /// Shared by the sidebar and playbar covers. Because the key carries the
+  /// grid size, the same artwork at two sizes occupies two entries and neither
+  /// can be served for the other.
+  async fn cover_for(&self, url: &str, cols: u16, rows: u16) -> Option<CoverArt> {
+    let key = cover_cache_key(url, cols, rows);
+
+    if let Some(art) = {
+      let s = self.state.lock().unwrap();
+      s.cover_cache.get(&key).cloned()
+    } {
+      return Some(art);
+    }
+
+    if let Some(art) = read_cached_cover(&key, cols, rows).await {
+      self
+        .state
+        .lock()
+        .unwrap()
+        .cover_cache
+        .insert(key, art.clone());
+      return Some(art);
+    }
+
+    match render_cover(url, cols, rows).await {
+      Ok(art) => {
+        if let Err(err) = write_cached_cover(&key, &art).await {
+          warn!(?err, "could not persist cover cache entry");
+        }
+        self
+          .state
+          .lock()
+          .unwrap()
+          .cover_cache
+          .insert(key, art.clone());
+        Some(art)
+      }
+      Err(err) => {
+        if is_ffmpeg_missing(&err) {
+          warn!(
+            ?err,
+            "ffmpeg unavailable — disabling cover art for this run"
+          );
+          self.state.lock().unwrap().cover_render_disabled = true;
+        } else {
+          warn!(?err, url = %url, "cover render failed");
+        }
+        None
+      }
+    }
+  }
+
+  /// Render the playbar thumbnail for whatever is playing.
+  ///
+  /// Keyed on the playing URI so the 3s playback poll does not re-render the
+  /// same track twenty times a minute.
+  async fn refresh_now_playing_cover(&self) -> Result<()> {
+    let target = {
+      let s = self.state.lock().unwrap();
+      if s.cover_render_disabled {
+        return Ok(());
+      }
+      let Some(uri) = s.playing_uri() else {
+        return Ok(());
+      };
+      if s.now_playing_cover.as_ref().is_some_and(|c| c.id == uri) {
+        return Ok(());
+      }
+      s.playing_image_url().map(|url| (uri, url))
+    };
+
+    let Some((uri, url)) = target else {
+      // Nothing playing, or no artwork. Record it so we stop looking.
+      let mut s = self.state.lock().unwrap();
+      if let Some(uri) = s.playing_uri() {
+        s.now_playing_cover = Some(CachedCover { id: uri, art: None });
+      }
+      return Ok(());
+    };
+
+    let art = self.cover_for(&url, NOWPLAYING_COLS, NOWPLAYING_ROWS).await;
+
+    let mut s = self.state.lock().unwrap();
+    // Only publish if the same thing is still playing.
+    if s.playing_uri().as_deref() == Some(uri.as_str()) {
+      s.now_playing_cover = Some(CachedCover { id: uri, art });
+    }
+    Ok(())
+  }
+
   /// Publish a cover, but only if the cursor has not moved on to a different
   /// playlist while we were fetching or rendering it.
   fn publish_cover(&self, playlist_id: &str, art: Option<CoverArt>) {
@@ -407,8 +499,8 @@ impl Network {
       .get(s.playlists_index)
       .is_some_and(|p| p.id.id() == playlist_id);
     if still_selected {
-      s.playlist_cover = Some(PlaylistCover {
-        playlist_id: playlist_id.to_string(),
+      s.playlist_cover = Some(CachedCover {
+        id: playlist_id.to_string(),
         art,
       });
     }
@@ -1296,7 +1388,11 @@ const CACHE_BYTES_PER_CELL: usize = 6;
 /// when the artwork changes. That makes it a correct invalidation key even
 /// though the URL as a whole is documented as expiring within a day: a rotated
 /// URL for unchanged artwork still hits, and changed artwork always misses.
-fn cover_cache_key(url: &str) -> String {
+fn cover_cache_key(url: &str, cols: u16, rows: u16) -> String {
+  // Dimensions are part of the key, not just the filename. Two panes request
+  // the same artwork at different sizes — the sidebar at 24x12, the playbar at
+  // 8x3 — and an artwork-only key would let the in-memory tier hand one the
+  // other's grid.
   let path = url.split(['?', '#']).next().unwrap_or(url);
   let segment: String = path
     .rsplit('/')
@@ -1307,7 +1403,7 @@ fn cover_cache_key(url: &str) -> String {
     .take(64)
     .collect();
   if !segment.is_empty() {
-    return segment;
+    return format!("{segment}-{cols}x{rows}");
   }
   // Unrecognisable URL shape — fall back to hashing it. DefaultHasher is not
   // stable across Rust releases, which for a cache means an occasional miss
@@ -1316,23 +1412,22 @@ fn cover_cache_key(url: &str) -> String {
   use std::hash::{Hash, Hasher};
   let mut hasher = std::collections::hash_map::DefaultHasher::new();
   url.hash(&mut hasher);
-  format!("h{:016x}", hasher.finish())
+  format!("h{:016x}-{cols}x{rows}", hasher.finish())
 }
 
-/// Cache entries carry their grid size in the filename, so changing
-/// COVER_COLS or COVER_ROWS invalidates every old entry instead of loading
-/// one at the wrong dimensions.
+/// The key already carries the grid size, so changing a pane's dimensions
+/// invalidates its old entries rather than loading one at the wrong size.
 fn cover_cache_path(key: &str) -> Option<std::path::PathBuf> {
   let dir = crate::config::cover_cache_dir().ok()?;
-  Some(dir.join(format!("{key}-{COVER_COLS}x{COVER_ROWS}.rgb")))
+  Some(dir.join(format!("{key}.rgb")))
 }
 
 /// Cells are stored in cell order — 6 bytes each — so read and write are
 /// exact mirrors and no framing or version header is needed.
-async fn read_cached_cover(key: &str) -> Option<CoverArt> {
+async fn read_cached_cover(key: &str, cols: u16, rows: u16) -> Option<CoverArt> {
   let path = cover_cache_path(key)?;
   let bytes = tokio::fs::read(&path).await.ok()?;
-  let expected = COVER_COLS as usize * COVER_ROWS as usize * CACHE_BYTES_PER_CELL;
+  let expected = cols as usize * rows as usize * CACHE_BYTES_PER_CELL;
   if bytes.len() != expected {
     // Truncated or half-written entry. Drop it and re-render.
     warn!(path = %path.display(), "discarding malformed cover cache entry");
@@ -1348,11 +1443,7 @@ async fn read_cached_cover(key: &str) -> Option<CoverArt> {
     .iter()
     .map(|c| ((c[0], c[1], c[2]), (c[3], c[4], c[5])))
     .collect();
-  Some(CoverArt {
-    cols: COVER_COLS,
-    rows: COVER_ROWS,
-    cells,
-  })
+  Some(CoverArt { cols, rows, cells })
 }
 
 async fn write_cached_cover(key: &str, art: &CoverArt) -> Result<()> {
@@ -1378,9 +1469,7 @@ async fn write_cached_cover(key: &str, art: &CoverArt) -> Result<()> {
 /// task (which is serial — a stuck render would stall playback polling).
 const COVER_TIMEOUT: Duration = Duration::from_secs(5);
 
-async fn render_cover(url: &str) -> Result<CoverArt> {
-  let cols = COVER_COLS;
-  let rows = COVER_ROWS;
+async fn render_cover(url: &str, cols: u16, rows: u16) -> Result<CoverArt> {
   let px_w = cols as u32;
   let px_h = rows as u32 * 2; // two stacked pixels per cell
 
@@ -1486,7 +1575,9 @@ mod tests {
     let path = dir.join("fixture.ppm");
     fixture(&path);
 
-    let art = render_cover(path.to_str().unwrap()).await.unwrap();
+    let art = render_cover(path.to_str().unwrap(), COVER_COLS, COVER_ROWS)
+      .await
+      .unwrap();
 
     assert_eq!(art.cols, COVER_COLS);
     assert_eq!(art.rows, COVER_ROWS);
@@ -1614,12 +1705,58 @@ mod tests {
     let rotated = "https://i.scdn.co/image/ab67706c0000da84aaaa1111?token=xyz&t=99";
     let different = "https://i.scdn.co/image/ab67706c0000da84bbbb2222";
 
-    assert_eq!(cover_cache_key(a), cover_cache_key(rotated), "same artwork");
+    assert_eq!(
+      cover_cache_key(a, COVER_COLS, COVER_ROWS),
+      cover_cache_key(rotated, COVER_COLS, COVER_ROWS),
+      "same artwork"
+    );
     assert_ne!(
-      cover_cache_key(a),
-      cover_cache_key(different),
+      cover_cache_key(a, COVER_COLS, COVER_ROWS),
+      cover_cache_key(different, COVER_COLS, COVER_ROWS),
       "different artwork"
     );
+  }
+
+  /// The reason the key carries dimensions. The sidebar wants 24x12 and the
+  /// playbar 8x3 of the *same* artwork; an artwork-only key would let the
+  /// in-memory tier serve one pane the other's grid, and the on-disk entry
+  /// would be rejected as malformed and re-rendered on every switch.
+  #[test]
+  fn the_same_artwork_at_two_sizes_gets_two_keys() {
+    let url = "https://i.scdn.co/image/ab67616d00001e02abcdef";
+    let big = cover_cache_key(url, COVER_COLS, COVER_ROWS);
+    let small = cover_cache_key(url, NOWPLAYING_COLS, NOWPLAYING_ROWS);
+    assert_ne!(big, small, "sizes must not share a cache key");
+    assert_ne!(
+      cover_cache_path(&big).unwrap(),
+      cover_cache_path(&small).unwrap(),
+      "and must not share a file"
+    );
+  }
+
+  /// A grid stored at one size must not be readable at another.
+  #[tokio::test]
+  async fn a_cache_entry_is_rejected_at_the_wrong_size() {
+    let art = sample_art();
+    let key = "spotuifytestwrongsize";
+    write_cached_cover(key, &art).await.unwrap();
+
+    assert!(
+      read_cached_cover(key, COVER_COLS, COVER_ROWS)
+        .await
+        .is_some(),
+      "readable at the size it was written"
+    );
+    // Re-write, since a wrong-size read deletes the entry as malformed.
+    write_cached_cover(key, &art).await.unwrap();
+    assert!(
+      read_cached_cover(key, NOWPLAYING_COLS, NOWPLAYING_ROWS)
+        .await
+        .is_none(),
+      "must not be reinterpreted at a different size"
+    );
+
+    let _ = tokio::fs::remove_file(cover_cache_path(key).unwrap()).await;
   }
 
   #[test]
@@ -1630,11 +1767,24 @@ mod tests {
       "not even a url",
       "",
     ] {
-      let key = cover_cache_key(url);
+      let key = cover_cache_key(url, COVER_COLS, COVER_ROWS);
       assert!(!key.is_empty(), "key for {url:?} must not be empty");
+      // Alphanumerics plus the dimension suffix's dash. What actually matters
+      // is that nothing can escape the cache directory.
       assert!(
-        key.chars().all(|c| c.is_ascii_alphanumeric()),
-        "key for {url:?} must be alphanumeric, got {key:?}"
+        key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+        "key for {url:?} has unsafe characters: {key:?}"
+      );
+      assert!(
+        !key.contains("..") && !key.contains('/') && !key.contains('\\'),
+        "key for {url:?} could escape the cache directory: {key:?}"
+      );
+      // And it must actually land inside the cache dir.
+      let path = cover_cache_path(&key).expect("path resolves");
+      let dir = crate::config::cover_cache_dir().expect("cache dir");
+      assert!(
+        path.starts_with(&dir),
+        "key for {url:?} resolved outside the cache dir: {path:?}"
       );
     }
   }
@@ -1658,7 +1808,9 @@ mod tests {
     let art = sample_art();
     let key = "spotuifytestroundtrip";
     write_cached_cover(key, &art).await.unwrap();
-    let back = read_cached_cover(key).await.expect("cache entry readable");
+    let back = read_cached_cover(key, COVER_COLS, COVER_ROWS)
+      .await
+      .expect("cache entry readable");
 
     assert_eq!(back.cols, art.cols);
     assert_eq!(back.rows, art.rows);
@@ -1675,15 +1827,22 @@ mod tests {
     let path = cover_cache_path(key).unwrap();
     tokio::fs::write(&path, b"too short").await.unwrap();
 
-    assert!(read_cached_cover(key).await.is_none(), "must not be used");
+    assert!(
+      read_cached_cover(key, COVER_COLS, COVER_ROWS)
+        .await
+        .is_none(),
+      "must not be used"
+    );
     assert!(!path.exists(), "malformed entry should be removed");
   }
 
   #[tokio::test]
   async fn cache_miss_returns_none() {
-    assert!(read_cached_cover("spotuifytestdefinitelyabsent")
-      .await
-      .is_none());
+    assert!(
+      read_cached_cover("spotuifytestdefinitelyabsent", COVER_COLS, COVER_ROWS)
+        .await
+        .is_none()
+    );
   }
 
   #[test]

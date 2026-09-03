@@ -23,7 +23,9 @@ pub(super) async fn handle(
   }
   if keys.activate.matches(&key) {
     let idx = state.lock().unwrap().library_index;
-    match LIBRARY_ENTRIES.get(idx).copied() {
+    // Matched on `name`, not on the rendered label, so glyphs are free to
+    // change without silently breaking navigation.
+    match LIBRARY_ENTRIES.get(idx).map(|e| e.name) {
       Some("Liked Songs") => {
         let _ = io_tx.send(IoEvent::GetSavedTracks).await;
         state.lock().unwrap().push_block(ActiveBlock::TrackTable);

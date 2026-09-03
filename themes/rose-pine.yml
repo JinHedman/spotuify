@@ -1,0 +1,10 @@
+# Rosé Pine — rose accent, foam progress, gold marker.
+theme:
+  active:       "#ebbcba"
+  inactive:     "#6e6a86"
+  selected_bg:  "#26233a"
+  text:         Reset
+  hint:         "#908caa"
+  error:        "#eb6f92"
+  progress:     "#9ccfd8"
+  playing_icon: "#f6c177"

@@ -204,6 +204,36 @@ pub const PRESETS: &[Preset] = &[
     kind: PresetKind::Fixed,
     raw: include_str!("../../themes/monokai.yml"),
   },
+  Preset {
+    name: "Catppuccin Mocha",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/catppuccin-mocha.yml"),
+  },
+  Preset {
+    name: "Tokyo Night",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/tokyo-night.yml"),
+  },
+  Preset {
+    name: "Rosé Pine",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/rose-pine.yml"),
+  },
+  Preset {
+    name: "Dracula",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/dracula.yml"),
+  },
+  Preset {
+    name: "Everforest Dark",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/everforest-dark.yml"),
+  },
+  Preset {
+    name: "Kanagawa",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/kanagawa.yml"),
+  },
   // Listed after the fixed palettes so the existing entries keep their
   // positions and muscle memory still works. The individual decade and era
   // palettes are deliberately not listed: they are the data the auto modes
@@ -310,6 +340,46 @@ mod tests {
       assert!(d.decade > prev, "decades must ascend: {}", d.decade);
       assert_eq!(d.decade % 10, 0, "{} is not a decade start", d.decade);
       prev = d.decade;
+    }
+  }
+
+  /// Sidebar glyphs must stay single-width, or the whole sidebar shifts. This
+  /// cannot verify what a font actually renders, but it does catch the common
+  /// mistake of reaching for a multi-codepoint or emoji-presented glyph.
+  #[test]
+  fn library_glyphs_are_single_codepoint_and_not_emoji() {
+    for entry in &crate::app::LIBRARY_ENTRIES {
+      let chars: Vec<char> = entry.icon.chars().collect();
+      assert_eq!(
+        chars.len(),
+        1,
+        "{}: {:?} must be one codepoint",
+        entry.name,
+        entry.icon
+      );
+      let c = chars[0] as u32;
+      assert!(
+        c < 0x1F000,
+        "{}: {:?} is in an emoji plane and will render double-width",
+        entry.name,
+        entry.icon
+      );
+      assert!(!entry.name.is_empty());
+    }
+  }
+
+  /// A glyph already carrying a meaning elsewhere must not be reused.
+  #[test]
+  fn library_glyphs_do_not_collide_with_existing_ones() {
+    // Selection, play/pause, repeat, shuffle.
+    let taken = ["\u{25b6}", "\u{23f8}", "\u{21bb}", "\u{21c4}"];
+    for entry in &crate::app::LIBRARY_ENTRIES {
+      assert!(
+        !taken.contains(&entry.icon),
+        "{} reuses {:?}, which already means something else",
+        entry.name,
+        entry.icon
+      );
     }
   }
 
