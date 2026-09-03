@@ -205,101 +205,29 @@ pub const PRESETS: &[Preset] = &[
     raw: include_str!("../../themes/monokai.yml"),
   },
   // Listed after the fixed palettes so the existing entries keep their
-  // positions and muscle memory still works.
+  // positions and muscle memory still works. The individual decade and era
+  // palettes are deliberately not listed: they are the data the auto modes
+  // resolve against, not alternatives to choose between, and listing all
+  // fifteen buried the five real presets.
   Preset {
-    name: "Decade — follows the music",
+    name: "Decade",
     kind: PresetKind::DecadeAuto,
     raw: "",
   },
   Preset {
-    name: "Era — follows the music",
+    name: "Era",
     kind: PresetKind::EraAuto,
     raw: "",
   },
   Preset {
-    name: "Era · 1950s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/eras/1950s.yml"),
-  },
-  Preset {
-    name: "Era · 1960s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/eras/1960s.yml"),
-  },
-  Preset {
-    name: "Era · 1970s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/eras/1970s.yml"),
-  },
-  Preset {
-    name: "Era · 1980s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/eras/1980s.yml"),
-  },
-  Preset {
-    name: "Era · 1990s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/eras/1990s.yml"),
-  },
-  Preset {
-    name: "Era · 2000s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/eras/2000s.yml"),
-  },
-  Preset {
-    name: "Era · 2010s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/eras/2010s.yml"),
-  },
-  Preset {
-    name: "Era · 2020s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/eras/2020s.yml"),
-  },
-  Preset {
-    name: "Time of day — follows the clock",
+    name: "Time of day",
     kind: PresetKind::TimeOfDayAuto,
     raw: "",
   },
   Preset {
-    name: "After dark — warm at night",
+    name: "After dark",
     kind: PresetKind::AfterDark,
     raw: "",
-  },
-  Preset {
-    name: "Decade · 1960s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/decades/1960s.yml"),
-  },
-  Preset {
-    name: "Decade · 1970s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/decades/1970s.yml"),
-  },
-  Preset {
-    name: "Decade · 1980s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/decades/1980s.yml"),
-  },
-  Preset {
-    name: "Decade · 1990s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/decades/1990s.yml"),
-  },
-  Preset {
-    name: "Decade · 2000s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/decades/2000s.yml"),
-  },
-  Preset {
-    name: "Decade · 2010s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/decades/2010s.yml"),
-  },
-  Preset {
-    name: "Decade · 2020s",
-    kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/decades/2020s.yml"),
   },
 ];
 
@@ -433,11 +361,11 @@ mod tests {
         "{kind:?} must have a picker entry"
       );
     }
-    let era_fixed = PRESETS
-      .iter()
-      .filter(|p| p.kind == PresetKind::Fixed && p.name.starts_with("Era · "))
-      .count();
-    assert_eq!(era_fixed, ERAS.len(), "one fixed entry per era palette");
+    // The individual palettes are intentionally absent from the picker.
+    assert!(
+      !PRESETS.iter().any(|p| p.name.contains(" · ")),
+      "sub-palettes must not be listed as pickable entries"
+    );
   }
 
   #[test]
