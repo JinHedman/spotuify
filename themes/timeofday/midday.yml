@@ -1,0 +1,10 @@
+# 12:00 — midday: bright and green, the daylight neutral.
+theme:
+  active:       "#3ec46d"
+  inactive:     "#55605a"
+  selected_bg:  "#263029"
+  text:         Reset
+  hint:         "#86948b"
+  error:        "#e0453c"
+  progress:     "#5ada87"
+  playing_icon: "#7ceaa2"

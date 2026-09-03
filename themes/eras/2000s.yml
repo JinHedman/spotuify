@@ -1,0 +1,10 @@
+# 2000s — minimalist: blue-grey, blue-green, tan.
+theme:
+  active:       "#7fa8c4"
+  inactive:     "#5a5c5e"
+  selected_bg:  "#24282a"
+  text:         Reset
+  hint:         "#8c8f91"
+  error:        "#cf5b52"
+  progress:     "#6fa89c"
+  playing_icon: "#a8c4d6"

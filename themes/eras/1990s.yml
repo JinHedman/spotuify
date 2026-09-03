@@ -1,0 +1,12 @@
+# 1990s — grunge: plum, forest green, deep red. The source names only darks,
+# so the plum hue is lifted for the accent and the true darks take the
+# background roles, where they belong.
+theme:
+  active:       "#a35a7a"
+  inactive:     "#4a3f45"
+  selected_bg:  "#291f26"
+  text:         Reset
+  hint:         "#7d6b75"
+  error:        "#b8433f"
+  progress:     "#5c8a5c"
+  playing_icon: "#c4707a"

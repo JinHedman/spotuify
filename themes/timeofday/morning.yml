@@ -1,0 +1,10 @@
+# 08:00 — morning: clear cyan.
+theme:
+  active:       "#4fb8d8"
+  inactive:     "#4a5a63"
+  selected_bg:  "#22323a"
+  text:         Reset
+  hint:         "#7b929c"
+  error:        "#e0574b"
+  progress:     "#6fd0e8"
+  playing_icon: "#8fe0f2"

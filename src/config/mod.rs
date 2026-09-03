@@ -1,4 +1,5 @@
 pub mod client;
+pub mod daylight;
 pub mod keys;
 pub mod presets;
 pub mod theme;
@@ -39,6 +40,13 @@ pub fn cover_cache_dir() -> Result<PathBuf> {
   let dir = project_dirs()?.cache_dir().join("covers");
   std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
   Ok(dir)
+}
+
+/// Persists the after-dark modifier strength chosen in the theme picker.
+/// Overrides `config.yml`'s `time_of_day_shift`, the same way
+/// `.selected_theme` overrides the configured theme. Delete to fall back.
+pub fn time_of_day_path() -> Result<PathBuf> {
+  Ok(config_dir()?.join(".time_of_day_shift"))
 }
 
 /// Persists the theme chosen via the in-app picker. Contents: one line, the

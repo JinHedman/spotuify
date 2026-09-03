@@ -51,6 +51,12 @@ const COVER_HEIGHT: u16 = COVER_ROWS + 2;
 pub fn draw(frame: &mut Frame, state: &Arc<Mutex<AppState>>) {
   let area = frame.area();
   let mut state = state.lock().unwrap();
+  // Recompute the theme source, then advance any in-flight fade, so this
+  // frame paints the current blend. In DecadeAuto this is what notices a
+  // track change and starts the next fade — no notification path needed.
+  let fade = std::time::Duration::from_millis(state.config.behavior.theme_transition_ms);
+  state.apply_theme_source(fade);
+  state.tick_theme();
 
   if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
     too_small::draw(frame, area, &state.theme);

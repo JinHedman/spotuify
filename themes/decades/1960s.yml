@@ -1,0 +1,10 @@
+# 1960s — warm mustard and olive, muted print colours.
+theme:
+  active:       "#d9a441"
+  inactive:     "#6b6247"
+  selected_bg:  "#3d3826"
+  text:         Reset
+  hint:         "#8a7f5e"
+  error:        "#b3462f"
+  progress:     "#c98a2e"
+  playing_icon: "#e0b355"

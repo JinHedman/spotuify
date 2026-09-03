@@ -1,0 +1,10 @@
+# 05:00 — first light: dusty violet and pink.
+theme:
+  active:       "#c98fb0"
+  inactive:     "#4a4059"
+  selected_bg:  "#2a2438"
+  text:         Reset
+  hint:         "#7d7291"
+  error:        "#e05c6e"
+  progress:     "#d9a3c4"
+  playing_icon: "#f0b6d1"

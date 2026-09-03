@@ -1,0 +1,10 @@
+# 1970s — burnt orange and gold.
+theme:
+  active:       "#e2711d"
+  inactive:     "#6e4b31"
+  selected_bg:  "#3f2a1b"
+  text:         Reset
+  hint:         "#9c7048"
+  error:        "#c1352b"
+  progress:     "#f2a03d"
+  playing_icon: "#ffb454"

@@ -1,0 +1,10 @@
+# 1970s — earth tones: harvest gold and avocado green.
+theme:
+  active:       "#c8892b"
+  inactive:     "#6b5a42"
+  selected_bg:  "#33291c"
+  text:         Reset
+  hint:         "#9c876a"
+  error:        "#b8402f"
+  progress:     "#7d8c3a"
+  playing_icon: "#e0a83d"

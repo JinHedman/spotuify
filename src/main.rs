@@ -12,7 +12,8 @@ use client::{IoEvent, Network};
 use config::client::ClientConfig;
 use config::user::UserConfig;
 use config::{
-  client_config_path, presets, selected_theme_path, token_cache_path, user_config_path,
+  client_config_path, presets, selected_theme_path, time_of_day_path, token_cache_path,
+  user_config_path,
 };
 use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
@@ -33,6 +34,10 @@ const BANNER: &str = r"
 
   Terminal client for Spotify
 ";
+
+/// Redraw interval while a theme fade is in flight — roughly 30fps, enough
+/// for a blend to read as continuous motion.
+const TRANSITION_FRAME_MS: u64 = 33;
 
 /// How long to wait for the network task to drain after the terminal has been
 /// restored, before giving up and exiting anyway.
@@ -69,8 +74,22 @@ async fn main() -> Result<()> {
   // silently ignored; the built-in default stays in place.
   if let Ok(path) = selected_theme_path() {
     if let Ok(raw) = std::fs::read_to_string(&path) {
-      if let Some(preset) = presets::find_by_name(raw.trim()) {
-        state.lock().unwrap().theme = preset.theme();
+      // By index, so a persisted "Decade" choice restores the mode and not
+      // just a palette. Zero duration: fading in from the built-in default at
+      // startup would look like a glitch.
+      if let Some(index) = presets::index_by_name(raw.trim()) {
+        state.lock().unwrap().select_preset(index, Duration::ZERO);
+      }
+    }
+  }
+
+  // Restore the after-dark modifier, which the picker persists separately —
+  // it layers on top of the theme rather than being one, so it cannot live in
+  // .selected_theme. Malformed content is ignored, same as the theme file.
+  if let Ok(path) = time_of_day_path() {
+    if let Ok(raw) = std::fs::read_to_string(&path) {
+      if let Ok(value) = raw.trim().parse::<f32>() {
+        state.lock().unwrap().time_of_day_shift = value.clamp(0.0, 1.0);
       }
     }
   }
@@ -121,14 +140,22 @@ async fn run(
   let mut events = EventStream::new();
   let mut poll = time::interval(Duration::from_millis(user_cfg.behavior.poll_interval_ms));
   poll.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-  let mut redraw = time::interval(Duration::from_millis(user_cfg.behavior.tick_rate_ms));
-  redraw.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-
   loop {
     terminal.draw(|f| ui::draw(f, &state))?;
 
+    // Redraw faster while a theme fade is running. At the default 200ms tick
+    // a 350ms fade would paint two intermediate frames, which reads as a
+    // stutter rather than a transition. Reverts to the configured tick as
+    // soon as the fade finishes, so the idle cost is unchanged.
+    let fading = { state.lock().unwrap().theme_transition_active() };
+    let redraw_in = if fading {
+      Duration::from_millis(TRANSITION_FRAME_MS)
+    } else {
+      Duration::from_millis(user_cfg.behavior.tick_rate_ms)
+    };
+
     tokio::select! {
-      _ = redraw.tick() => {}
+      _ = time::sleep(redraw_in) => {}
       _ = poll.tick() => {
         let _ = io_tx.send(IoEvent::GetCurrentPlayback).await;
       }

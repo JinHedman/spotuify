@@ -1,0 +1,10 @@
+# 2000s — cool blues and chrome.
+theme:
+  active:       "#3d8bfd"
+  inactive:     "#4d5666"
+  selected_bg:  "#1e2733"
+  text:         Reset
+  hint:         "#7b8794"
+  error:        "#e04b4b"
+  progress:     "#57a0ff"
+  playing_icon: "#8ec5ff"

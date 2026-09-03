@@ -1,5 +1,5 @@
 use crate::app::AppState;
-use crate::config::presets::PRESETS;
+use crate::config::presets::{PresetKind, PRESETS};
 use ratatui::{
   layout::{Alignment, Constraint, Direction, Layout, Rect},
   style::{Modifier, Style},
@@ -37,11 +37,51 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     .iter()
     .map(|p| {
       // Small color swatch in the active color of each preset, so you get a
-      // preview of each accent before you commit.
-      let swatch_color = p.theme().active;
+      // preview of each accent before you commit. The auto entry has no
+      // palette of its own, so it shows whatever it resolves to right now.
+      // Auto entries have no palette of their own, so each shows what it
+      // currently resolves to.
+      let swatch_color = p.theme().map(|t| t.active).unwrap_or(match p.kind {
+        PresetKind::DecadeAuto => state
+          .decade_theme()
+          .map(|t| t.active)
+          .unwrap_or(theme.active),
+        PresetKind::EraAuto => state.era_theme().map(|t| t.active).unwrap_or(theme.active),
+        PresetKind::TimeOfDayAuto => crate::config::daylight::theme_now().active,
+        _ => theme.active,
+      });
+      // The modifier is a checkbox, not a swatch: it layers on top of the
+      // selected theme rather than being one of the alternatives, and using
+      // the same marker for both would imply it replaces them.
+      if p.kind == PresetKind::AfterDark {
+        let (mark, style) = if state.after_dark_on() {
+          ("[x] ", Style::default().fg(theme.active))
+        } else {
+          ("[ ] ", Style::default().fg(theme.hint))
+        };
+        return ListItem::new(Line::from(vec![
+          Span::styled(mark, style),
+          Span::raw(p.name),
+        ]));
+      }
+      // Tell the auto entry what it currently resolves to, so its swatch
+      // colour is explained rather than mysterious.
+      let suffix = match p.kind {
+        PresetKind::DecadeAuto => match state.decade_label() {
+          Some(label) => format!("  {label}"),
+          None => "  (no year)".to_string(),
+        },
+        PresetKind::EraAuto => match state.era_label() {
+          Some(label) => format!("  {label}"),
+          None => "  (no year)".to_string(),
+        },
+        PresetKind::TimeOfDayAuto => format!("  {}", state.day_phase_label()),
+        _ => String::new(),
+      };
       ListItem::new(Line::from(vec![
         Span::styled("● ", Style::default().fg(swatch_color)),
         Span::raw(p.name),
+        Span::styled(suffix, Style::default().fg(theme.hint)),
       ]))
     })
     .collect();
@@ -78,7 +118,14 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         .fg(theme.active)
         .add_modifier(Modifier::BOLD),
     ),
-    Span::styled(" cancel", Style::default().fg(theme.hint)),
+    Span::styled(" cancel  ", Style::default().fg(theme.hint)),
+    Span::styled(
+      "Space",
+      Style::default()
+        .fg(theme.active)
+        .add_modifier(Modifier::BOLD),
+    ),
+    Span::styled(" toggle", Style::default().fg(theme.hint)),
   ]);
   frame.render_widget(Paragraph::new(hint).alignment(Alignment::Center), rows[2]);
 }

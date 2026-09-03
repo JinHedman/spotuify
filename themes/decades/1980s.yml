@@ -1,0 +1,10 @@
+# 1980s — neon magenta and cyan.
+theme:
+  active:       "#ff2fb9"
+  inactive:     "#5b3a72"
+  selected_bg:  "#2b1140"
+  text:         Reset
+  hint:         "#8a5fa8"
+  error:        "#ff4d5a"
+  progress:     "#22e0e0"
+  playing_icon: "#4df0ff"

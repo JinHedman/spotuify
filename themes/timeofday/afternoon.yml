@@ -1,0 +1,10 @@
+# 16:00 — afternoon: low golden sun.
+theme:
+  active:       "#e8a33d"
+  inactive:     "#6b5a42"
+  selected_bg:  "#362c1e"
+  text:         Reset
+  hint:         "#9c876a"
+  error:        "#d8453a"
+  progress:     "#f2b957"
+  playing_icon: "#ffcd70"
