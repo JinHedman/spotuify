@@ -44,6 +44,20 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         .map(|t| t.active)
         .or_else(|| state.decade_theme().map(|t| t.active))
         .unwrap_or(theme.active);
+      // The modifier is a checkbox, not a swatch: it layers on top of the
+      // selected theme rather than being one of the alternatives, and using
+      // the same marker for both would imply it replaces them.
+      if p.kind == PresetKind::AfterDark {
+        let (mark, style) = if state.after_dark_on() {
+          ("[x] ", Style::default().fg(theme.active))
+        } else {
+          ("[ ] ", Style::default().fg(theme.hint))
+        };
+        return ListItem::new(Line::from(vec![
+          Span::styled(mark, style),
+          Span::raw(p.name),
+        ]));
+      }
       // Tell the auto entry what it currently resolves to, so its swatch
       // colour is explained rather than mysterious.
       let suffix = match (p.kind, state.decade_label()) {
@@ -91,7 +105,14 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         .fg(theme.active)
         .add_modifier(Modifier::BOLD),
     ),
-    Span::styled(" cancel", Style::default().fg(theme.hint)),
+    Span::styled(" cancel  ", Style::default().fg(theme.hint)),
+    Span::styled(
+      "Space",
+      Style::default()
+        .fg(theme.active)
+        .add_modifier(Modifier::BOLD),
+    ),
+    Span::styled(" toggle", Style::default().fg(theme.hint)),
   ]);
   frame.render_widget(Paragraph::new(hint).alignment(Alignment::Center), rows[2]);
 }

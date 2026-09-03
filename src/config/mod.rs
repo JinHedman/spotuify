@@ -42,6 +42,13 @@ pub fn cover_cache_dir() -> Result<PathBuf> {
   Ok(dir)
 }
 
+/// Persists the after-dark modifier strength chosen in the theme picker.
+/// Overrides `config.yml`'s `time_of_day_shift`, the same way
+/// `.selected_theme` overrides the configured theme. Delete to fall back.
+pub fn time_of_day_path() -> Result<PathBuf> {
+  Ok(config_dir()?.join(".time_of_day_shift"))
+}
+
 /// Persists the theme chosen via the in-app picker. Contents: one line, the
 /// preset name (e.g. "Nord"). Takes precedence over `config.yml`'s theme block
 /// on startup. Delete this file to revert to your `config.yml` theme.

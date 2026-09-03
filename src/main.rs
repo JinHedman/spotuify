@@ -12,7 +12,8 @@ use client::{IoEvent, Network};
 use config::client::ClientConfig;
 use config::user::UserConfig;
 use config::{
-  client_config_path, presets, selected_theme_path, token_cache_path, user_config_path,
+  client_config_path, presets, selected_theme_path, time_of_day_path, token_cache_path,
+  user_config_path,
 };
 use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
@@ -78,6 +79,17 @@ async fn main() -> Result<()> {
       // startup would look like a glitch.
       if let Some(index) = presets::index_by_name(raw.trim()) {
         state.lock().unwrap().select_preset(index, Duration::ZERO);
+      }
+    }
+  }
+
+  // Restore the after-dark modifier, which the picker persists separately —
+  // it layers on top of the theme rather than being one, so it cannot live in
+  // .selected_theme. Malformed content is ignored, same as the theme file.
+  if let Ok(path) = time_of_day_path() {
+    if let Ok(raw) = std::fs::read_to_string(&path) {
+      if let Ok(value) = raw.trim().parse::<f32>() {
+        state.lock().unwrap().time_of_day_shift = value.clamp(0.0, 1.0);
       }
     }
   }

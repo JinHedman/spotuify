@@ -14,6 +14,10 @@ pub enum PresetKind {
   /// Follows the release decade of whatever is playing, falling back to the
   /// previously chosen fixed theme when the year is unknown.
   DecadeAuto,
+  /// Not a theme at all — a toggle for the after-dark warm/dim modifier,
+  /// which layers on top of whichever theme is selected. Listed here so it is
+  /// discoverable in the same place people go to change how the app looks.
+  AfterDark,
 }
 
 pub struct Preset {
@@ -133,6 +137,11 @@ pub const PRESETS: &[Preset] = &[
     raw: "",
   },
   Preset {
+    name: "After dark — warm at night",
+    kind: PresetKind::AfterDark,
+    raw: "",
+  },
+  Preset {
     name: "Decade · 1960s",
     kind: PresetKind::Fixed,
     raw: include_str!("../../themes/decades/1960s.yml"),
@@ -185,7 +194,7 @@ impl Preset {
   pub fn theme(&self) -> Option<Theme> {
     match self.kind {
       PresetKind::Fixed => Some(parse(self.raw)),
-      PresetKind::DecadeAuto => None,
+      PresetKind::DecadeAuto | PresetKind::AfterDark => None,
     }
   }
 }
@@ -213,7 +222,7 @@ mod tests {
         PresetKind::Fixed => {
           assert!(p.theme().is_some(), "{} must yield a theme", p.name);
         }
-        PresetKind::DecadeAuto => {
+        PresetKind::DecadeAuto | PresetKind::AfterDark => {
           assert!(p.theme().is_none(), "{} has no palette of its own", p.name);
         }
       }

@@ -194,6 +194,9 @@ pub struct AppState {
   /// The chosen fixed palette. Used directly in `Fixed` mode, and as the
   /// fallback in `DecadeAuto` when a track's year is unknown.
   pub theme_fixed: Theme,
+  /// After-dark modifier strength, 0.0 off to 1.0 full. Starts from
+  /// `config.behavior.time_of_day_shift` and can be toggled at runtime.
+  pub time_of_day_shift: f32,
   /// In-flight fade, if any. `theme` above is the *rendered* result; this is
   /// what it is moving toward.
   pub theme_transition: Option<ThemeTransition>,
@@ -291,9 +294,11 @@ pub enum DialogAction {
 impl AppState {
   pub fn new(config: Arc<UserConfig>) -> Self {
     let theme = config.theme;
+    let warmth = config.behavior.time_of_day_shift.clamp(0.0, 1.0);
     Self {
       config,
       theme,
+      time_of_day_shift: warmth,
       theme_mode: ThemeMode::Fixed,
       theme_fixed: theme,
       theme_before_preview: None,
@@ -362,6 +367,24 @@ impl AppState {
       .unwrap_or(0)
   }
 
+  /// Strength applied when switching the after-dark modifier on. The curve is
+  /// already restrained, so full is the sensible on-state.
+  pub const AFTER_DARK_ON: f32 = 1.0;
+
+  /// Flip the after-dark modifier, returning the new strength.
+  pub fn toggle_after_dark(&mut self) -> f32 {
+    self.time_of_day_shift = if self.time_of_day_shift > 0.0 {
+      0.0
+    } else {
+      Self::AFTER_DARK_ON
+    };
+    self.time_of_day_shift
+  }
+
+  pub fn after_dark_on(&self) -> bool {
+    self.time_of_day_shift > 0.0
+  }
+
   /// Snapshot the current theme source before previewing.
   pub fn begin_theme_preview(&mut self) {
     self.theme_before_preview = Some(ThemeSnapshot {
@@ -401,6 +424,8 @@ impl AppState {
         }
       }
       PresetKind::DecadeAuto => self.theme_mode = ThemeMode::DecadeAuto,
+      // Not a source: moving the cursor onto it must not disturb the theme.
+      PresetKind::AfterDark => {}
     }
     self.apply_theme_source(duration);
   }
@@ -437,7 +462,7 @@ impl AppState {
 
   /// Apply the configured after-dark warmth, if any.
   fn warmed(&self, theme: Theme) -> Theme {
-    let strength = self.config.behavior.time_of_day_shift;
+    let strength = self.time_of_day_shift;
     if strength <= 0.0 {
       return theme;
     }
@@ -883,6 +908,52 @@ mod draw_loop_tests {
       std::thread::sleep(Duration::from_millis(3));
     }
     panic!("never settled with the warmth modifier active");
+  }
+
+  /// The toggle must not behave like a theme: moving onto it or selecting it
+  /// must leave the chosen palette alone, or picking a theme then switching
+  /// the modifier would silently lose the theme.
+  #[test]
+  fn the_after_dark_row_is_not_a_theme_source() {
+    use crate::config::presets::{PresetKind, PRESETS};
+    let mut s = state();
+    s.select_preset(1, Duration::ZERO);
+    let chosen = s.theme_fixed;
+    let mode = s.theme_mode;
+
+    let row = PRESETS
+      .iter()
+      .position(|p| p.kind == PresetKind::AfterDark)
+      .expect("the toggle row must exist");
+    s.select_preset(row, Duration::ZERO);
+
+    assert_eq!(s.theme_fixed, chosen, "palette preserved");
+    assert_eq!(s.theme_mode, mode, "mode preserved");
+  }
+
+  #[test]
+  fn toggling_after_dark_flips_and_reports_the_new_state() {
+    let mut s = state_with_warmth(0.0);
+    assert!(!s.after_dark_on());
+
+    let on = s.toggle_after_dark();
+    assert!(on > 0.0 && s.after_dark_on(), "switched on");
+
+    let off = s.toggle_after_dark();
+    assert_eq!(off, 0.0);
+    assert!(!s.after_dark_on(), "and back off");
+  }
+
+  /// Switching the modifier must not disturb which theme is selected.
+  #[test]
+  fn toggling_after_dark_keeps_the_selected_source() {
+    let mut s = state_with_warmth(0.0);
+    s.select_preset(2, Duration::ZERO);
+    let chosen = s.theme_fixed;
+
+    s.toggle_after_dark();
+    s.apply_theme_source(Duration::ZERO);
+    assert_eq!(s.theme_fixed, chosen, "source untouched by the modifier");
   }
 
   /// Zero strength must be exactly the unmodified source, at any hour.
