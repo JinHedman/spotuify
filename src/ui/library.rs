@@ -3,7 +3,7 @@ use crate::ui::layout;
 use ratatui::{
   layout::Rect,
   style::{Modifier, Style},
-  text::Line,
+  text::{Line, Span},
   widgets::{List, ListItem, ListState},
   Frame,
 };
@@ -14,7 +14,15 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
 
   let items: Vec<ListItem> = LIBRARY_ENTRIES
     .iter()
-    .map(|entry| ListItem::new(Line::raw(*entry)))
+    .map(|entry| {
+      // Glyph dimmed so it reads as a marker rather than competing with the
+      // label; the selection highlight carries emphasis on its own.
+      ListItem::new(Line::from(vec![
+        Span::styled(entry.icon, Style::default().fg(theme.hint)),
+        Span::raw("  "),
+        Span::raw(entry.name),
+      ]))
+    })
     .collect();
 
   let list = List::new(items)

@@ -48,7 +48,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     Span::raw("  "),
     Span::styled(subtitle, Style::default().fg(theme.hint)),
     Span::raw("   "),
-    Span::styled(format!("vol {vol}%"), Style::default().fg(theme.hint)),
+    Span::styled(format!("vol {vol}%"), volume_style(state, &theme)),
   ]);
   frame.render_widget(Paragraph::new(header), rows[0]);
 
@@ -110,6 +110,20 @@ fn mode_line<'a>(
     Span::raw(" "),
     Span::styled(repeat_glyph, repeat_style),
   ])
+}
+
+/// Volume text, lit just after a change and settling back to hint.
+///
+/// Blends rather than switching outright, so it reads as attention decaying
+/// rather than as two states. Falls back to a hard swap when either colour is
+/// a named terminal colour, for the same reason theme fades do.
+fn volume_style(state: &AppState, theme: &crate::config::theme::Theme) -> Style {
+  let lit = state.volume_flash();
+  if lit <= 0.0 {
+    return Style::default().fg(theme.hint);
+  }
+  let colour = crate::config::theme::blend(theme.hint, theme.active, lit);
+  Style::default().fg(colour).add_modifier(Modifier::BOLD)
 }
 
 fn item_display(

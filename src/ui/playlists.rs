@@ -61,4 +61,12 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
   }
   *list_state.offset_mut() = state.playlists_offset;
   frame.render_stateful_widget(list, area, &mut list_state);
+  scroll::render(
+    frame,
+    area,
+    state.playlists_offset,
+    visible,
+    state.playlists.len(),
+    &theme,
+  );
 }

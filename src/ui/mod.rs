@@ -57,6 +57,7 @@ pub fn draw(frame: &mut Frame, state: &Arc<Mutex<AppState>>) {
   let fade = std::time::Duration::from_millis(state.config.behavior.theme_transition_ms);
   state.apply_theme_source(fade);
   state.tick_theme();
+  state.tick_volume();
 
   if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
     too_small::draw(frame, area, &state.theme);

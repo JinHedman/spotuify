@@ -143,11 +143,11 @@ async fn run(
   loop {
     terminal.draw(|f| ui::draw(f, &state))?;
 
-    // Redraw faster while a theme fade is running. At the default 200ms tick
-    // a 350ms fade would paint two intermediate frames, which reads as a
+    // Redraw faster while anything is mid-animation. At the default 200ms
+    // tick a 350ms fade would paint two intermediate frames, which reads as a
     // stutter rather than a transition. Reverts to the configured tick as
-    // soon as the fade finishes, so the idle cost is unchanged.
-    let fading = { state.lock().unwrap().theme_transition_active() };
+    // soon as nothing is animating, so the idle cost is unchanged.
+    let fading = { state.lock().unwrap().needs_fast_redraw() };
     let redraw_in = if fading {
       Duration::from_millis(TRANSITION_FRAME_MS)
     } else {

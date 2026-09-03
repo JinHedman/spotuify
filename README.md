@@ -106,6 +106,9 @@ All keys except `Ctrl+C` are remappable via `config.yml` (see below).
 - **Device selector** — `d` lists your Spotify Connect devices. `Enter` transfers playback.
 - **Playback control** — play/pause, next/prev, seek, volume, shuffle (`z`), repeat (`R`).
 - **Shuffle / repeat indicators** — shown on the playbar timeline row: `⇄` for shuffle, `↻` for repeat-all, `↻1` for repeat-one. Dim when off. Worth knowing that `n` / `p` follow Spotify's queue, so with shuffle on they jump to a random track — the indicator is there to make that visible rather than surprising.
+- **Library glyphs** — the sidebar entries carry markers: `♥` Liked Songs, `◎` Albums, `★` Artists, `◉` Podcasts, `◷` Recently Played. All single-width and none reusing a glyph that already means something else (`▶` selection, `⏸` play state, `↻` repeat, `⇄` shuffle).
+- **Scrollbars** — the track table and playlist list show a position indicator, but only when the list overflows: on a short list its absence is the signal that there is nothing more to see.
+- **Volume flash** — the volume figure lights up and settles back when the level changes, including changes made from another Spotify client.
 - **Now-playing marker** — the row holding the current track or episode is tinted and its row number replaced by a three-bar equalizer, animated while playing and flat when paused. Shown in the track table and the episode list. Matched by URI, so a track appearing twice in a playlist marks both rows — Spotify reports what is playing but not where in the context it sits, so this is not resolvable.
 - **Smooth progress bar** — sub-cell resolution via unicode eighth-blocks, so the extrapolated progress actually shows as smooth motion.
 - **Save toggle** — `s` toggles save/unsave for the currently-playing track, `S` for the current album, `f` for the current artist.

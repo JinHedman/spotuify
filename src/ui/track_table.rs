@@ -127,6 +127,14 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
   }
   *table_state.offset_mut() = state.track_list_offset;
   frame.render_stateful_widget(table, area, &mut table_state);
+  scroll::render(
+    frame,
+    area,
+    state.track_list_offset,
+    visible,
+    state.track_list.len(),
+    &theme,
+  );
 }
 
 fn format_ms(ms: u64) -> String {
@@ -245,6 +253,58 @@ mod tests {
       out.contains('1') && out.contains('2'),
       "row numbers render:\n{out}"
     );
+  }
+
+  /// The bar must appear only when the list actually overflows: on a short
+  /// list its absence is the signal that there is nothing more to see.
+  #[test]
+  fn scrollbar_appears_only_when_the_list_overflows() {
+    const THUMB: char = '\u{2503}';
+
+    // Two rows in a ten-row pane: nothing hidden, so no bar.
+    let mut short = state_with(vec![
+      row("Alpha", Some("spotify:track:a")),
+      row("Beta", Some("spotify:track:b")),
+    ]);
+    let out = render(&mut short, 60, 10);
+    assert!(
+      !out.contains(THUMB),
+      "short list must not draw a scrollbar:\n{out}"
+    );
+
+    // Forty rows in the same pane: most are hidden, so the bar appears.
+    let mut long = state_with(
+      (0..40)
+        .map(|i| row(&format!("Track {i}"), Some(&format!("spotify:track:{i}"))))
+        .collect(),
+    );
+    let out = render(&mut long, 60, 10);
+    assert!(
+      out.contains(THUMB),
+      "overflowing list must draw a scrollbar:\n{out}"
+    );
+  }
+
+  /// The bar sits inside the border, never on top of it.
+  #[test]
+  fn scrollbar_does_not_overwrite_the_frame() {
+    const THUMB: char = '\u{2503}';
+    let mut state = state_with(
+      (0..40)
+        .map(|i| row(&format!("Track {i}"), Some(&format!("spotify:track:{i}"))))
+        .collect(),
+    );
+    let out = render(&mut state, 60, 10);
+    let lines: Vec<&str> = out.lines().collect();
+
+    // Top and bottom rows are the frame and must be untouched by the thumb.
+    assert!(!lines[0].contains(THUMB), "thumb on the top border");
+    assert!(
+      !lines[lines.len() - 1].contains(THUMB),
+      "thumb on the bottom border"
+    );
+    // And the frame corners survive.
+    assert!(lines[0].contains('\u{250c}'), "top-left corner intact");
   }
 
   /// Fails if the equalizer never reaches the buffer — whether because of a
