@@ -12,7 +12,7 @@ pub enum PresetKind {
   /// One fixed palette.
   Fixed,
   /// Follows the release decade of whatever is playing, falling back to the
-  /// previously chosen fixed theme when the year is unknown.
+  /// default palette when the year is unknown.
   DecadeAuto,
   /// Follows the clock, drifting continuously through the day's palettes.
   TimeOfDayAuto,
@@ -102,6 +102,17 @@ pub fn palette_for_year(year: u16) -> &'static DecadePalette {
   DECADES.iter().find(|d| d.decade == decade).unwrap_or(last)
 }
 
+/// The app's default palette. Also the fallback for decade mode when a
+/// track's release year is unknown — a stable, recognisable colour reads
+/// better there than inheriting whichever palette happened to be selected
+/// before, which would make the same unknown-year track look different
+/// depending on where you had been.
+const DEFAULT_RAW: &str = include_str!("../../themes/spotify-green.yml");
+
+pub fn default_theme() -> Theme {
+  parse(DEFAULT_RAW)
+}
+
 /// All preset themes bundled into the binary. Source of truth is `themes/*.yml`
 /// at the repo root — these files are `include_str!`-ed at compile time so the
 /// preset list stays in sync with the shipped example files.
@@ -109,7 +120,7 @@ pub const PRESETS: &[Preset] = &[
   Preset {
     name: "Spotify Green",
     kind: PresetKind::Fixed,
-    raw: include_str!("../../themes/spotify-green.yml"),
+    raw: DEFAULT_RAW,
   },
   Preset {
     name: "Gruvbox Dark",
@@ -237,6 +248,18 @@ mod tests {
     for d in DECADES {
       let _ = d.theme();
     }
+  }
+
+  /// The default must stay the same palette as the preset of that name, or
+  /// decade mode's fallback would silently diverge from "Spotify Green".
+  #[test]
+  fn default_theme_is_the_spotify_green_preset() {
+    let named = PRESETS
+      .iter()
+      .find(|p| p.name == "Spotify Green")
+      .and_then(|p| p.theme())
+      .expect("the Spotify Green preset must exist");
+    assert_eq!(default_theme(), named);
   }
 
   #[test]

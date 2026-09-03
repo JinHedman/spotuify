@@ -442,7 +442,12 @@ impl AppState {
   pub fn apply_theme_source(&mut self, duration: Duration) {
     let base = match self.theme_mode {
       ThemeMode::Fixed => self.theme_fixed,
-      ThemeMode::DecadeAuto => self.decade_theme().unwrap_or(self.theme_fixed),
+      // Falls back to the default palette, not to `theme_fixed`: an
+      // unknown-year track should look the same whichever theme you happened
+      // to be on before switching to decade mode.
+      ThemeMode::DecadeAuto => self
+        .decade_theme()
+        .unwrap_or_else(crate::config::presets::default_theme),
       ThemeMode::TimeOfDayAuto => crate::config::daylight::theme_now(),
     };
     // Layered on top of the source rather than replacing it, so decade mode
@@ -698,17 +703,24 @@ mod theme_transition_tests {
     assert_eq!(parse_release_year("19😀4"), None);
   }
 
+  /// With no year to go on, decade mode shows the default palette rather than
+  /// whatever was selected before — so the same unknown-year track does not
+  /// look different depending on where you came from.
   #[test]
-  fn decade_mode_falls_back_when_nothing_is_playing() {
+  fn decade_mode_falls_back_to_the_default_palette() {
     let mut s = state();
-    let fallback = rgb_theme(77);
-    s.set_theme_immediate(fallback);
-    s.theme_fixed = fallback;
+    // Somewhere clearly unrelated to the default, so inheriting would show.
+    s.theme_fixed = rgb_theme(77);
+    s.set_theme_immediate(s.theme_fixed);
     s.theme_mode = ThemeMode::DecadeAuto;
 
     assert!(s.decade_theme().is_none(), "no playback, no decade");
     s.apply_theme_source(Duration::ZERO);
-    assert_eq!(s.theme.active, fallback.active, "keeps the chosen theme");
+    assert_eq!(
+      s.theme,
+      crate::config::presets::default_theme(),
+      "falls back to Spotify Green, not to the previous palette"
+    );
   }
 
   /// The lesson from the now-playing marker: `PlayableItem` is untagged with
@@ -765,10 +777,11 @@ mod theme_transition_tests {
     );
   }
 
-  /// Choosing auto must not overwrite the fallback, or an unknown-year track
-  /// would land on whatever palette happened to precede it.
+  /// Choosing auto must not overwrite `theme_fixed`: it is what you return to
+  /// when you leave decade mode, so losing it would strand you on a palette
+  /// you never picked.
   #[test]
-  fn choosing_auto_preserves_the_fallback_palette() {
+  fn choosing_auto_preserves_the_palette_to_return_to() {
     use crate::config::presets::{PresetKind, PRESETS};
     let mut s = state();
     s.select_preset(1, Duration::ZERO);
