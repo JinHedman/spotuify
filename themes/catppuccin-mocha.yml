@@ -1,0 +1,10 @@
+# Catppuccin Mocha — mauve accent, pastel on a soft dark base.
+theme:
+  active:       "#cba6f7"
+  inactive:     "#6c7086"
+  selected_bg:  "#313244"
+  text:         Reset
+  hint:         "#a6adc8"
+  error:        "#f38ba8"
+  progress:     "#a6e3a1"
+  playing_icon: "#94e2d5"

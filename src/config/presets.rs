@@ -204,6 +204,36 @@ pub const PRESETS: &[Preset] = &[
     kind: PresetKind::Fixed,
     raw: include_str!("../../themes/monokai.yml"),
   },
+  Preset {
+    name: "Catppuccin Mocha",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/catppuccin-mocha.yml"),
+  },
+  Preset {
+    name: "Tokyo Night",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/tokyo-night.yml"),
+  },
+  Preset {
+    name: "Rosé Pine",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/rose-pine.yml"),
+  },
+  Preset {
+    name: "Dracula",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/dracula.yml"),
+  },
+  Preset {
+    name: "Everforest Dark",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/everforest-dark.yml"),
+  },
+  Preset {
+    name: "Kanagawa",
+    kind: PresetKind::Fixed,
+    raw: include_str!("../../themes/kanagawa.yml"),
+  },
   // Listed after the fixed palettes so the existing entries keep their
   // positions and muscle memory still works. The individual decade and era
   // palettes are deliberately not listed: they are the data the auto modes
