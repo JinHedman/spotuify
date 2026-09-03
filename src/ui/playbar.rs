@@ -32,16 +32,11 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     return;
   };
 
-  // Layout D: cover on the left, metadata in its own column, playback state
-  // grouped on the right. Three content rows rather than two — the extra row
-  // comes out of the content area above.
+  // Cover on the left; everything else takes the full remaining width so the
+  // progress bar is as long as the pane allows.
   let cols = Layout::new(
     Direction::Horizontal,
-    [
-      Constraint::Length(NOWPLAYING_COLS + 2),
-      Constraint::Min(20),
-      Constraint::Length(RIGHT_WIDTH),
-    ],
+    [Constraint::Length(NOWPLAYING_COLS + 2), Constraint::Min(20)],
   )
   .split(inner);
 
@@ -49,7 +44,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
 
   let (title, subtitle, album_line, duration_ms) = item_display(playback);
 
-  let meta = Layout::new(
+  let rows = Layout::new(
     Direction::Vertical,
     [
       Constraint::Length(1),
@@ -59,34 +54,21 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
   )
   .split(cols[1]);
 
+  // Row 1: everything identifying the track, on one line. Stacking it over
+  // three rows was what forced the bar into a narrow column.
   let icon = if playback.is_playing { "▶" } else { "⏸" };
-  frame.render_widget(
-    Paragraph::new(Line::from(vec![
-      Span::styled(icon, Style::default().fg(theme.playing_icon)),
-      Span::raw(" "),
-      Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
-    ])),
-    meta[0],
-  );
-  frame.render_widget(
-    Paragraph::new(Line::styled(subtitle, Style::default().fg(theme.hint))),
-    meta[1],
-  );
-  frame.render_widget(
-    Paragraph::new(Line::styled(album_line, Style::default().fg(theme.hint))),
-    meta[2],
-  );
-
-  // Right column: clock, bar, then modes and volume.
-  let right = Layout::new(
-    Direction::Vertical,
-    [
-      Constraint::Length(1),
-      Constraint::Length(1),
-      Constraint::Length(1),
-    ],
-  )
-  .split(cols[2]);
+  let mut ident = vec![
+    Span::styled(icon, Style::default().fg(theme.playing_icon)),
+    Span::raw(" "),
+    Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
+  ];
+  for part in [subtitle, album_line] {
+    if !part.is_empty() {
+      ident.push(Span::styled(" · ", Style::default().fg(theme.inactive)));
+      ident.push(Span::styled(part, Style::default().fg(theme.hint)));
+    }
+  }
+  frame.render_widget(Paragraph::new(Line::from(ident)), rows[0]);
 
   let progress_ms = state
     .extrapolated_progress_ms()
@@ -98,15 +80,22 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     0.0
   };
 
-  frame.render_widget(
-    Paragraph::new(Line::styled(
-      format!("{} / {}", format_ms(progress_ms), format_ms(duration_ms)),
-      Style::default().fg(theme.hint),
-    ))
-    .right_aligned(),
-    right[0],
-  );
+  // Row 2: time and playback state, centred over the bar beneath them.
+  let vol = playback.device.volume_percent.unwrap_or(0);
+  let mut status = vec![Span::styled(
+    format!("{} / {}", format_ms(progress_ms), format_ms(duration_ms)),
+    Style::default().fg(theme.hint),
+  )];
+  status.push(Span::raw("    "));
+  status.extend(mode_line(playback, &theme).spans);
+  status.push(Span::raw("    "));
+  status.push(Span::styled(
+    format!("vol {vol}%"),
+    volume_style(state, &theme),
+  ));
+  frame.render_widget(Paragraph::new(Line::from(status)).centered(), rows[1]);
 
+  // Row 3: the bar, full width of the column.
   let gauge = Gauge::default()
     .gauge_style(Style::default().fg(theme.progress))
     // Sub-cell resolution, so the extrapolated progress reads as motion
@@ -114,24 +103,8 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     .use_unicode(true)
     .ratio(ratio)
     .label("");
-  frame.render_widget(gauge, right[1]);
-
-  let vol = playback.device.volume_percent.unwrap_or(0);
-  let mut state_line = mode_line(playback, &theme).spans;
-  state_line.push(Span::raw("  "));
-  state_line.push(Span::styled(
-    format!("vol {vol}%"),
-    volume_style(state, &theme),
-  ));
-  frame.render_widget(
-    Paragraph::new(Line::from(state_line)).right_aligned(),
-    right[2],
-  );
+  frame.render_widget(gauge, rows[2]);
 }
-
-/// Width of the right-hand column: the widest thing in it is the clock,
-/// `-00:00 / 00:00`, plus the mode glyphs and volume beneath.
-const RIGHT_WIDTH: u16 = 18;
 
 /// The playbar thumbnail, or nothing when there is no art to show.
 ///
@@ -361,7 +334,10 @@ mod tests {
           "album_group": null, "restrictions": null, "type": "album",
           "uri": "spotify:album:x", "total_tracks": 11
         },
-        "artists": [],
+        "artists": [{
+          "external_urls": {}, "href": null, "id": null,
+          "name": "Fleetwood Mac", "type": "artist", "uri": "spotify:artist:x"
+        }],
         "disc_number": 1, "duration_ms": 254_000, "explicit": false,
         "external_ids": {}, "external_urls": {}, "href": null,
         "id": id, "is_local": false, "is_playable": true,
@@ -386,20 +362,78 @@ mod tests {
     }
   }
 
-  /// All three metadata rows must reach the screen, including the album year
-  /// that layout D adds.
+  /// Everything identifying the track shares one row now, so all of it must
+  /// still reach the screen — including the album year layout D added.
   #[test]
-  fn all_three_metadata_rows_render() {
+  fn the_identity_row_carries_title_artist_and_album() {
     let mut s = state();
     s.playback = Some(playing("spotify:track:abc"));
     let out = render(&s, 90, 5);
     assert!(out.contains("Dreams"), "title:\n{out}");
+    assert!(out.contains("Fleetwood Mac"), "artist:\n{out}");
     assert!(out.contains("Rumours"), "album:\n{out}");
     assert!(out.contains("1977"), "year from release_date:\n{out}");
     assert!(out.contains("1:24"), "elapsed:\n{out}");
     assert!(out.contains("4:14"), "duration:\n{out}");
     assert!(out.contains("vol 50%"), "volume:\n{out}");
     assert!(out.contains('\u{21c4}'), "shuffle indicator:\n{out}");
+  }
+
+  /// The bar must span the width left over by the cover, not sit in a narrow
+  /// column. At 90 cells the cover takes 10, so the bar has ~80 to work with
+  /// and a third of that is far more than the 18-wide column it replaced.
+  #[test]
+  fn the_progress_bar_fills_the_width_beside_the_cover() {
+    let mut s = state();
+    s.playback = Some(playing("spotify:track:abc"));
+    let out = render(&s, 90, 5);
+    let bar_row = out.lines().nth(3).expect("bar is the third content row");
+
+    let filled = bar_row.chars().filter(|c| *c == '\u{2588}').count();
+    assert!(
+      filled > 20,
+      "bar only filled {filled} cells — still boxed into a column?\n{out}"
+    );
+
+    // And it reaches well past where the old 18-wide column ended.
+    let last = bar_row
+      .char_indices()
+      .filter(|(_, c)| *c == '\u{2588}')
+      .map(|(i, _)| i)
+      .next_back()
+      .expect("some filled cells");
+    assert!(last > 30, "bar stops at column {last}\n{out}");
+  }
+
+  /// Time and controls are centred, so there is space on both sides. Right
+  /// alignment would leave none on the right, left none on the left.
+  #[test]
+  fn the_status_row_is_centred() {
+    let mut s = state();
+    s.playback = Some(playing("spotify:track:abc"));
+    let out = render(&s, 90, 5);
+    let row = out
+      .lines()
+      .nth(2)
+      .expect("status is the second content row");
+
+    // Centring is within the column beside the cover, so measure from there
+    // rather than across the whole pane — the cover's width would otherwise
+    // read as left padding and make a correct layout look off-centre.
+    let inner = row.trim_matches('\u{2502}');
+    let col_start = (NOWPLAYING_COLS + 2) as usize;
+    let column: String = inner.chars().skip(col_start).collect();
+    let lead = column.len() - column.trim_start().len();
+    let trail = column.len() - column.trim_end().len();
+    assert!(
+      lead > 2 && trail > 2,
+      "not centred: {lead} leading, {trail} trailing\n{out}"
+    );
+    // Centred means the two are close; allow a cell for odd widths.
+    assert!(
+      lead.abs_diff(trail) <= 2,
+      "off-centre: {lead} vs {trail}\n{out}"
+    );
   }
 
   /// The thumbnail draws only when its art belongs to what is playing — a
