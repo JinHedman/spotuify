@@ -12,7 +12,17 @@ use serde_json::Value;
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
   let theme = state.theme;
-  let block = Block::new().borders(Borders::ALL).title(" Now Playing ");
+  // Themed like every other pane. This was the one block left without a
+  // border_style, so it fell back to the terminal's default foreground and
+  // stayed white whatever theme was active.
+  //
+  // `inactive` rather than `active`: the playbar cannot take focus, and
+  // accent-colouring it would signal focus it can never have. Matches the
+  // cover pane, the other unfocusable block.
+  let block = Block::new()
+    .borders(Borders::ALL)
+    .title(" Now Playing ")
+    .border_style(Style::default().fg(theme.inactive));
   let inner = block.inner(area);
   frame.render_widget(block, area);
 
@@ -377,6 +387,61 @@ mod tests {
     assert!(out.contains("4:14"), "duration:\n{out}");
     assert!(out.contains("vol 50%"), "volume:\n{out}");
     assert!(out.contains('\u{21c4}'), "shuffle indicator:\n{out}");
+  }
+
+  /// The border must take its colour from the theme. It was the one block
+  /// without a `border_style`, so it rendered in the terminal's default
+  /// foreground and stayed white whatever theme was selected.
+  #[test]
+  fn the_border_is_themed() {
+    use ratatui::style::Color;
+    let mut s = state();
+    s.playback = Some(playing("spotify:track:abc"));
+    // A colour nothing else in the default theme uses.
+    s.theme.inactive = Color::Rgb(200, 30, 90);
+
+    let mut terminal = Terminal::new(TestBackend::new(60, 5)).unwrap();
+    terminal.draw(|f| draw(f, f.area(), &s)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    // Top-left corner is border.
+    let corner = &buf[(0, 0)];
+    assert_eq!(corner.symbol(), "\u{250c}", "expected the corner glyph");
+    assert_eq!(
+      corner.style().fg,
+      Some(Color::Rgb(200, 30, 90)),
+      "border must use theme.inactive, got {:?}",
+      corner.style().fg
+    );
+  }
+
+  /// The short-terminal fallback reuses this pane, and used to hand it four
+  /// rows — enough for two content rows, so the progress bar was clipped off.
+  #[test]
+  fn the_basic_view_gives_the_playbar_every_row_it_needs() {
+    let mut s = state();
+    s.playback = Some(playing("spotify:track:abc"));
+
+    let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    terminal
+      .draw(|f| crate::ui::basic_view::draw(f, f.area(), &s))
+      .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let out: String = (0..buf.area.height)
+      .map(|y| {
+        (0..buf.area.width)
+          .map(|x| buf[(x, y)].symbol().to_string())
+          .collect::<String>()
+      })
+      .collect::<Vec<_>>()
+      .join("\n");
+
+    assert!(out.contains("Dreams"), "identity row:\n{out}");
+    assert!(out.contains("1:24"), "status row:\n{out}");
+    assert!(
+      out.contains('\u{2588}'),
+      "progress bar must not be clipped:\n{out}"
+    );
   }
 
   /// The bar must span the width left over by the cover, not sit in a narrow
