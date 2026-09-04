@@ -172,7 +172,7 @@ pub fn draw(frame: &mut Frame, state: &Arc<Mutex<AppState>>) {
   }
 
   playbar::draw(frame, rows[2], &state);
-  legend::draw(frame, rows[3], &state.theme);
+  legend::draw(frame, rows[3], &state);
 
   if state.active_block == ActiveBlock::SelectDevice {
     select_device::draw(frame, area, &state);

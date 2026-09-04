@@ -211,7 +211,6 @@ impl Network {
       state.playback = playback;
       state.playback_received_at = Some(std::time::Instant::now());
       state.is_loading = false;
-      state.last_error = None;
     }
     // Keyed on the playing URI, so this no-ops on the 3s poll and only does
     // work when the track actually changes.
@@ -590,15 +589,14 @@ impl Network {
           album: String::new(),
           duration_ms: 0,
         }];
-        state.last_error = Some(
-          "playlist tracks blocked (403); Enter still starts playlist playback — apply for Spotify API extended quota to unlock listings"
-            .to_string(),
+        state.set_notice(
+          "playlist tracks blocked (403); Enter still starts playlist playback — apply for Spotify API extended quota to unlock listings",
         );
       } else {
         // Partial success: keep what we got and surface a short error.
         warn!(?err, "playlist_items pagination failed mid-stream");
         state.track_list = tracks;
-        state.last_error = Some(format!("playlist tracks truncated: {err:#}"));
+        state.set_notice(format!("playlist tracks truncated: {err:#}"));
       }
     } else {
       state.track_list = tracks;
@@ -1284,7 +1282,7 @@ impl Network {
 
   fn set_error(&self, msg: String) {
     let mut state = self.state.lock().unwrap();
-    state.last_error = Some(msg);
+    state.set_notice(msg);
     state.is_loading = false;
   }
 

@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
 
   if let Some(problem) = config_problem {
     warn!(%problem, "falling back to default configuration");
-    state.lock().unwrap().last_error = Some(problem);
+    state.lock().unwrap().set_notice(problem);
   }
 
   // If the user picked a preset in a previous session, apply it now — overrides

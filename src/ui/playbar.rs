@@ -26,12 +26,6 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
   let inner = block.inner(area);
   frame.render_widget(block, area);
 
-  if let Some(err) = &state.last_error {
-    let msg = Paragraph::new(err.as_str()).style(Style::default().fg(theme.error));
-    frame.render_widget(msg, inner);
-    return;
-  }
-
   let Some(playback) = state.playback.as_ref() else {
     let line = if state.is_loading {
       crate::ui::spinner::line("Loading…", &theme)
