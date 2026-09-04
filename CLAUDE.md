@@ -42,6 +42,8 @@ Single `#[tokio::main]` runtime with two actors and an event stream wired togeth
 
 Shared state is `Arc<Mutex<AppState>>` (note: the plan mentions `RwLock`, but the implementation uses `Mutex` — don't change this without a reason). All state lives in `src/app/mod.rs::AppState`.
 
+Transient messages go through `AppState::set_notice` and render on the bottom status row (`ui::legend`), which yields its key legend for `NOTICE_TTL`. They expire on read rather than being cleared by a later success — a playback poll says nothing about, say, a config parse error. Never render a message by replacing a pane.
+
 `main.rs::install_panic_hook` wraps the default panic hook with `ratatui::restore()` so a panic doesn't leave the terminal in raw/alt-screen mode. Preserve this if you touch startup.
 
 Auth lives in `src/auth/mod.rs` — `build_client` constructs the `AuthCodeSpotify` with the token cache path, `authenticate` runs the OAuth dance (opens the browser, reads the pasted redirect URL). Runs once at startup before the tokio actors spin up.

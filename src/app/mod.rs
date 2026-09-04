@@ -69,6 +69,21 @@ pub struct ThemeSnapshot {
   fixed: Theme,
 }
 
+/// A message with a lifetime.
+#[derive(Debug, Clone)]
+pub struct Notice {
+  pub text: String,
+  at: Instant,
+}
+
+impl Notice {
+  /// Age this past its lifetime so expiry can be tested without sleeping.
+  #[cfg(test)]
+  pub fn expire_for_test(&mut self) {
+    self.at = Instant::now() - AppState::NOTICE_TTL;
+  }
+}
+
 /// Where the active theme comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
@@ -265,7 +280,9 @@ pub struct AppState {
 
   pub playback: Option<CurrentPlaybackContext>,
   pub playback_received_at: Option<Instant>,
-  pub last_error: Option<String>,
+  /// Transient message shown on the status line. Timestamped so it expires
+  /// on its own rather than relying on some later success to clear it.
+  pub last_error: Option<Notice>,
   pub is_loading: bool,
 
   pub active_block: ActiveBlock,
@@ -666,6 +683,27 @@ impl AppState {
     // mechanical wipe; this reads as the UI arriving somewhere.
     let eased = 1.0 - (1.0 - linear) * (1.0 - linear);
     self.theme = t.from.blend(t.to, eased);
+  }
+
+  /// How long a notice stays on the status line. Long enough to read a
+  /// serde parse error with a line and column in it.
+  pub const NOTICE_TTL: Duration = Duration::from_secs(8);
+
+  /// Show a message on the status line.
+  pub fn set_notice(&mut self, text: impl Into<String>) {
+    self.last_error = Some(Notice {
+      text: text.into(),
+      at: Instant::now(),
+    });
+  }
+
+  /// The current message, if one is set and still within its lifetime.
+  ///
+  /// Expiry is checked on read rather than swept on a timer, so nothing has
+  /// to own the job of clearing it.
+  pub fn notice(&self) -> Option<&str> {
+    let n = self.last_error.as_ref()?;
+    (n.at.elapsed() < Self::NOTICE_TTL).then_some(n.text.as_str())
   }
 
   /// How long the volume figure stays lit after a change.
