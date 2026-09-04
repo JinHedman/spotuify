@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time;
+use tracing::warn;
 
 const BANNER: &str = r"
    ____             _
@@ -62,12 +63,23 @@ async fn main() -> Result<()> {
   let cache_path = token_cache_path()?;
   let user_cfg_path = user_config_path()?;
   let client_cfg = ClientConfig::load_or_bootstrap(&client_path)?;
-  let user_cfg = Arc::new(UserConfig::load_or_default(&user_cfg_path)?);
+  // A malformed config.yml no longer stops startup: defaults are used and the
+  // problem is shown in the UI. Refusing to launch over one bad line in a file
+  // where every field is optional is the wrong trade, and the app is the only
+  // place the result is visible.
+  let loaded = UserConfig::load(&user_cfg_path);
+  let config_problem = loaded.problem;
+  let user_cfg = Arc::new(loaded.config);
 
   let spotify = auth::build_client(&client_cfg, cache_path);
   auth::authenticate(&spotify).await?;
 
   let state = Arc::new(Mutex::new(AppState::new(Arc::clone(&user_cfg))));
+
+  if let Some(problem) = config_problem {
+    warn!(%problem, "falling back to default configuration");
+    state.lock().unwrap().last_error = Some(problem);
+  }
 
   // If the user picked a preset in a previous session, apply it now — overrides
   // the theme that came in from config.yml. A malformed or stale file is

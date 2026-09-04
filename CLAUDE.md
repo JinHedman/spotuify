@@ -68,7 +68,7 @@ Every handler compares against `app.config.keys.*` (`src/config/keys.rs`) — **
 
 - `src/config/mod.rs` resolves paths via the `directories` crate under `ProjectDirs::from("io", "", "spotuify")`.
 - `client.yml` (credentials) — `ClientConfig::load_or_bootstrap` runs the interactive first-run wizard if missing.
-- `config.yml` (theme/behavior/keys) — `UserConfig::load_or_default`; missing file = built-in defaults, missing fields = per-field defaults.
+- `config.yml` (theme/behavior/keys) — `UserConfig::load` returns a `LoadedConfig { config, problem }` and never fails; a malformed file falls back to defaults and reports the parse error through `problem`, which `main.rs` puts into `last_error`. Missing file = built-in defaults, missing fields = per-field defaults. `load_or_default` is `#[cfg(test)]` only, so production cannot bypass the reporting.
 - Token cache at `.token_cache.json` in the same directory. Auth is OAuth auth-code via `rspotify` 0.16 with automatic refresh.
 - Theme presets live in `src/config/presets.rs`; the theme picker (`t`) writes the chosen preset name to `.selected_theme` in the same config dir. `main.rs` reads that file at startup *after* applying `config.yml`, so `.selected_theme` overrides `config.yml`'s theme. Malformed/stale content is silently ignored.
 
