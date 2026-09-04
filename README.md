@@ -161,7 +161,7 @@ redirect_port: 8888
 
 ### `config.yml` (optional)
 
-Controls theme, behavior, and keybindings. Missing file = built-in defaults. Every field has a sensible default; you only need to include the fields you want to override.
+Controls theme, behavior, and keybindings. Missing file = built-in defaults. A malformed file does **not** stop the app — it falls back to defaults and reports the parse error, with line and column, in the playbar. Every field has a sensible default; you only need to include the fields you want to override.
 
 ```yaml
 theme:
