@@ -50,7 +50,7 @@ Subsequent runs use the cached token at `$CONFIG_DIR/spotuify/.token_cache.json`
 
 ## Keybindings
 
-Press `?` at any time for the in-app help overlay. Defaults:
+Press `?` at any time for the in-app help overlay. It is generated from your actual bindings, so it stays correct after a rebind — as does the status-line legend. Defaults:
 
 | Key | Action |
 |-----|--------|
