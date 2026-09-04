@@ -157,8 +157,12 @@ mod tests {
   /// advertised the defaults no matter what the user had bound.
   #[test]
   fn the_overlay_shows_the_users_bindings_not_the_defaults() {
-    let mut keys = KeyBindings::default();
-    keys.shuffle = KeyList::single("ctrl+z");
+    // Struct update rather than assign-after-default: clippy's
+    // field_reassign_with_default rejects the latter.
+    let keys = KeyBindings {
+      shuffle: KeyList::single("ctrl+z"),
+      ..KeyBindings::default()
+    };
     let s = state_with(keys);
     let out = text(&s);
 
