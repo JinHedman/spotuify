@@ -64,7 +64,9 @@ Navigation is a stack of `ActiveBlock`s (`src/app/route.rs`) kept in `AppState.b
 
 ### Keybindings
 
-Every handler compares against `app.config.keys.*` (`src/config/keys.rs`) — **never hard-code keys** except `Ctrl+C` (hard-wired quit). Each action accepts a single key or a list; the help overlay is generated from this map. Users override via `$CONFIG_DIR/spotuify/config.yml`.
+Every handler compares against `app.config.keys.*` (`src/config/keys.rs`) — **never hard-code keys** except `Ctrl+C` (hard-wired quit). Each action accepts a single key or a list; users override via `$CONFIG_DIR/spotuify/config.yml`.
+
+`KeyBindings::all()` returns `(section, label, keys)` for every action and is the single source for both the help overlay (`ui::help`) and the status-line legend (`ui::legend`) — **never hard-code key strings in either**. Adding a binding means adding a field *and* an `all()` row; a test asserts the counts match. `KeyInput` implements `Display` in the syntax `parse` accepts, and a test round-trips every default so the UI can only show something a user could actually type. The parser has no function-key names (`F1`…), so bindings are limited to named keys and single characters.
 
 ### Config & auth
 

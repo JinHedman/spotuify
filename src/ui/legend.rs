@@ -7,20 +7,6 @@ use ratatui::{
   Frame,
 };
 
-const ENTRIES: &[(&str, &str)] = &[
-  ("?", "help"),
-  ("C-hjkl", "panes"),
-  ("Tab", "tabs"),
-  ("/", "search"),
-  ("d", "device"),
-  ("Q", "queue"),
-  ("s", "save"),
-  ("t", "theme"),
-  ("Space", "play/pause"),
-  ("b", "back"),
-  ("q", "quit"),
-];
-
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
   let theme = &state.theme;
 
@@ -37,14 +23,37 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
     return;
   }
 
-  let mut spans: Vec<Span> = Vec::with_capacity(ENTRIES.len() * 3);
-  for (i, (key, label)) in ENTRIES.iter().enumerate() {
-    if i > 0 {
+  // Read from the live bindings by field, so a rebind is reflected here
+  // instead of the row continuing to advertise the defaults. Referenced
+  // directly rather than looked up by name: the compiler then catches a
+  // renamed or removed action, which a string lookup would not.
+  //
+  // A subset, because the row is one line. The rest are in the help overlay.
+  let k = &state.config.keys;
+  let shown: [(&crate::config::keys::KeyList, &str); 9] = [
+    (&k.help, "help"),
+    (&k.search, "search"),
+    (&k.device, "device"),
+    (&k.queue, "queue"),
+    (&k.save_track, "save"),
+    (&k.theme_picker, "theme"),
+    (&k.play_pause, "play/pause"),
+    (&k.back, "back"),
+    (&k.quit, "quit"),
+  ];
+
+  let mut spans: Vec<Span> = Vec::with_capacity(shown.len() * 4);
+  for (keys, label) in shown {
+    let key = keys.describe_first();
+    if key.is_empty() {
+      continue;
+    }
+    if !spans.is_empty() {
       spans.push(Span::styled("  ·  ", Style::default().fg(theme.hint)));
     }
-    spans.push(Span::styled(*key, Style::default().fg(theme.active)));
+    spans.push(Span::styled(key, Style::default().fg(theme.active)));
     spans.push(Span::raw(" "));
-    spans.push(Span::styled(*label, Style::default().fg(theme.hint)));
+    spans.push(Span::styled(label, Style::default().fg(theme.hint)));
   }
   let paragraph = Paragraph::new(Line::from(spans)).alignment(Alignment::Center);
   frame.render_widget(paragraph, area);
