@@ -240,6 +240,9 @@ pub struct ArtistView {
   pub albums: Vec<SimplifiedAlbum>,
   pub albums_index: usize,
   pub albums_offset: usize,
+  /// True when Spotify's curated top-tracks endpoint was unavailable and the
+  /// list came entirely from search. Labels the tab honestly.
+  pub tracks_are_fallback: bool,
   pub tab: ArtistTab,
 }
 
@@ -254,6 +257,7 @@ impl Default for ArtistView {
       albums: Vec::new(),
       albums_index: 0,
       albums_offset: 0,
+      tracks_are_fallback: false,
       tab: ArtistTab::Tracks,
     }
   }

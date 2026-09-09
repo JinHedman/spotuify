@@ -89,7 +89,17 @@ Spotify deprecated these endpoints on **2024-11-27** for apps without legacy ext
 - Related artists
 - Featured playlists
 - Algorithmic playlists (Discover Weekly, Release Radar, Made For You)
-- `GET /artists/{id}/top-tracks` is flagged deprecated in rspotify 0.16 — current code keeps it under `#[allow(deprecated)]` and it only works on legacy-access accounts.
+- `GET /artists/{id}/top-tracks` was **removed outright** by the 2026-02-11 migration for apps in development mode; Extended Quota apps keep it. The call is still made under `#[allow(deprecated)]` because it is genuinely curated when it works, but failure is the expected case — `fetch_artist_tracks` carries the list on a search supplement and reports `used_fallback_only` so the tab can be labelled honestly.
+
+### Paging limits (checked 2026-09-09)
+
+The 2026-02-11 migration re-capped some `limit` maximums. Asking for more is a **400 on the first page**, which reads as an empty pane, so check before changing a `PAGE_LIMIT`:
+
+- `GET /artists/{id}/albums` — max **10** (default 5). Was 50.
+- `GET /search` — max **10** (default 5). Was 50.
+- `GET /albums/{id}/tracks`, `GET /shows/{id}/episodes`, `/me/tracks`, `/me/albums`, `/me/shows`, `/me/playlists`, `/playlists/{id}/items` — still **50**.
+
+Every paging loop goes through `wants_next_page`. All three of its conditions matter: stop on `next == None` (not on a short page, or items go missing from the middle of a list), stop on an empty page (`next` comes from the *unfiltered* total, so it can be set on a page whose items were all filtered out — terminating on `next` alone never ends), and stop at the cap.
 
 See `PLAN.md` §3 and README "Known limitations" for the full list.
 

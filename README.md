@@ -135,7 +135,8 @@ Spotify deprecated a large slice of the Web API for new apps on **2024-11-27**. 
 - `GET /audio-features`, `GET /audio-analysis` — Audio features / analysis
 - `GET /browse/featured-playlists` — Featured playlists
 - Algorithmic playlists (Discover Weekly, Release Radar, Daily Mix) — no longer returned
-- `GET /artists/{id}/top-tracks` — Top tracks (flagged deprecated in rspotify 0.16; the call is kept under `#[allow(deprecated)]`, works only for accounts with legacy extended-mode access)
+- `GET /artists/{id}/top-tracks` — **removed** by the 2026-02-11 migration for development-mode apps. The artist view still tries it, then falls back to search and labels the tab `Tracks` instead of `Top tracks` so it doesn't claim curated ordering it didn't get.
+- `GET /artists/{id}/albums` — still available, but `limit` was cut from 50 to **10**.
 
 Spotuify does not implement any of these. They are called out in [`PLAN.md`](./PLAN.md) §3.
 

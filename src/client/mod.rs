@@ -677,6 +677,11 @@ impl Network {
     let mut rows: Vec<TrackRow> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
+    // Removed outright by the 2026-02-11 migration for apps in development
+    // mode; Extended Quota apps keep it. Still attempted, because when it does
+    // work it is genuinely curated ordering, but a failure here is now the
+    // expected case rather than an edge one — hence the search supplement
+    // below carrying the list on its own.
     #[allow(deprecated)]
     let curated = self.spotify.artist_top_tracks(aid.as_ref(), None).await;
     let curated_ok = curated.is_ok();
@@ -731,12 +736,21 @@ impl Network {
 
   async fn fetch_artist_albums(&self, artist_id: &str) -> Result<Vec<SimplifiedAlbum>> {
     // `/artists/{id}/albums` survived Spotify's 2024-11-27 deprecation pass,
-    // but the endpoint can return 400 if `include_groups` is omitted on some
-    // accounts post-2026-02-11 — pass the canonical full set explicitly.
-    // `Market::FromToken` infers the user's country from the OAuth token so
-    // we don't have to know it.
-    const PAGE_LIMIT: u32 = 50;
-    const MAX_ALBUMS: usize = 200;
+    // but the 2026-02-11 migration cut its `limit` maximum from 50 to 10
+    // (default 5). Asking for 50 is out of range and the endpoint answers 400
+    // on the first page, so the whole tab came back empty. Of the paging
+    // endpoints this app uses, it is the only one that was re-capped:
+    // `/albums/{id}/tracks`, `/shows/{id}/episodes`, `/me/tracks` and
+    // `/me/playlists` are all still 50.
+    const PAGE_LIMIT: u32 = 10;
+    // Ten pages. Lower than it was because each page is now a fifth the size,
+    // and these are sequential requests on the serial network task — a
+    // prolific artist with `AppearsOn` would otherwise stall everything else
+    // behind twenty round trips.
+    const MAX_ALBUMS: usize = 100;
+    // `include_groups` passed explicitly: the endpoint 400s without it on some
+    // accounts post-migration. `Market::FromToken` infers the user's country
+    // from the OAuth token so we don't have to know it.
     let groups = [
       AlbumType::Album,
       AlbumType::Single,
@@ -798,8 +812,12 @@ impl Network {
 
     {
       let mut s = self.state.lock().unwrap();
-      if let Ok((rows, _)) = tracks_res {
+      if let Ok((rows, fallback_only)) = tracks_res {
         s.artist_view.tracks = rows;
+        // Drives the tab label. Without this the tab claims "Top tracks" while
+        // showing search results, which is what made the removed endpoint look
+        // like a bug in this app.
+        s.artist_view.tracks_are_fallback = fallback_only;
       }
       if let Ok(albums) = albums_res {
         s.artist_view.albums = albums;
