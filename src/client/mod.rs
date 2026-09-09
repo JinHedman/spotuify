@@ -261,8 +261,9 @@ impl Network {
         .current_user_playlists_manual(Some(PAGE_LIMIT), Some(offset))
         .await?;
       let has_next = page.next.is_some();
+      let got = page.items.len();
       playlists.extend(page.items);
-      if !has_next || playlists.len() >= MAX_PLAYLISTS {
+      if !wants_next_page(has_next, got, playlists.len(), MAX_PLAYLISTS) {
         break;
       }
       offset += PAGE_LIMIT;
@@ -534,6 +535,7 @@ impl Network {
           // matches what the user is looking at. Otherwise the penultimate
           // visible track plays the last one, etc.
           let next = page.next.clone();
+          let got = page.items.len();
           #[allow(deprecated)]
           tracks.extend(page.items.into_iter().map(|pi| match pi.item {
             Some(PlayableItem::Track(t)) => TrackRow::from_full(t),
@@ -558,7 +560,7 @@ impl Network {
           // Spotify can return fewer items than `limit` even when more pages
           // exist (server-side filtering). The authoritative end signal is
           // `page.next == None`, not a short page.
-          if next.is_none() || tracks.len() >= MAX_TRACKS {
+          if !wants_next_page(next.is_some(), got, tracks.len(), MAX_TRACKS) {
             break;
           }
           offset += PAGE_LIMIT;
@@ -755,13 +757,15 @@ impl Network {
           Some(offset),
         )
         .await?;
-      // `page.next`, not a short page. Spotify filters unavailable entries out
+      // `page.next`, not a short page: Spotify filters unavailable entries out
       // of a page *after* applying `limit`, so a page of 17 does not mean the
-      // discography is exhausted — stopping there drops albums from the middle
-      // of the list. Same fault the playlist listing had before a9d58d1.
+      // discography is exhausted. An empty page ends it too — see
+      // `wants_next_page`. This is the loop most exposed to that, because
+      // `AppearsOn` plus market filtering routinely empties a whole page.
       let has_next = page.next.is_some();
+      let got = page.items.len();
       albums.extend(page.items);
-      if !has_next || albums.len() >= MAX_ALBUMS {
+      if !wants_next_page(has_next, got, albums.len(), MAX_ALBUMS) {
         break;
       }
       offset += PAGE_LIMIT;
@@ -1381,6 +1385,24 @@ fn is_ffmpeg_missing(err: &anyhow::Error) -> bool {
     .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
 }
 
+/// Whether a paging loop should request another page.
+///
+/// Three conditions end a loop and every one of them has been got wrong here
+/// at least once:
+///
+/// - `has_next` — the authoritative end signal. Stopping on a *short* page
+///   instead drops items from the middle of a list, because Spotify filters
+///   unavailable entries out of a page after applying `limit`.
+/// - `got > 0` — but `next` alone is not enough. `next` is derived from the
+///   unfiltered `total`, so a page can come back empty with `next` still set.
+///   Without this the offset advances forever while nothing accumulates, so a
+///   length cap never trips and the network task — which is serial — wedges
+///   every other request behind it.
+/// - `collected < cap` — the safety bound.
+fn wants_next_page(has_next: bool, got: usize, collected: usize, cap: usize) -> bool {
+  has_next && got > 0 && collected < cap
+}
+
 /// Bytes per cell on disk: two RGB triples (top pixel, bottom pixel).
 const CACHE_BYTES_PER_CELL: usize = 6;
 
@@ -1717,6 +1739,63 @@ mod tests {
       cover_cache_key(different, COVER_COLS, COVER_ROWS),
       "different artwork"
     );
+  }
+
+  /// The regression that wedged the artist view: `next` set on a page whose
+  /// items were all filtered out. Terminating on `next` alone advances the
+  /// offset forever while nothing accumulates, so the length cap never trips.
+  #[test]
+  fn an_empty_page_ends_the_loop_even_when_next_is_set() {
+    assert!(
+      !wants_next_page(true, 0, 0, 200),
+      "an empty page must end the loop whatever `next` says"
+    );
+    assert!(
+      !wants_next_page(true, 0, 50, 200),
+      "still ends it after earlier pages collected rows"
+    );
+  }
+
+  /// The other half: a *short* page is not an end signal. Stopping there is
+  /// what dropped items from the middle of the playlist list.
+  #[test]
+  fn a_short_but_non_empty_page_continues() {
+    assert!(
+      wants_next_page(true, 17, 17, 200),
+      "17 of a requested 50 is filtering, not exhaustion"
+    );
+  }
+
+  #[test]
+  fn the_authoritative_end_signal_is_honoured() {
+    assert!(!wants_next_page(false, 50, 50, 200), "next == None ends it");
+  }
+
+  #[test]
+  fn the_cap_bounds_the_loop() {
+    assert!(!wants_next_page(true, 50, 200, 200), "at the cap");
+    assert!(!wants_next_page(true, 50, 250, 200), "past the cap");
+    assert!(wants_next_page(true, 50, 199, 200), "one short of it");
+  }
+
+  /// Walked as a loop would, an always-`next` server that returns nothing
+  /// must still terminate.
+  #[test]
+  fn a_server_that_never_clears_next_still_terminates() {
+    let mut collected = 0usize;
+    let mut pages = 0;
+    // Two real pages, then empty ones forever.
+    loop {
+      let got = if pages < 2 { 50 } else { 0 };
+      collected += got;
+      pages += 1;
+      if !wants_next_page(true, got, collected, 10_000) {
+        break;
+      }
+      assert!(pages < 100, "loop did not terminate");
+    }
+    assert_eq!(pages, 3, "stops on the first empty page");
+    assert_eq!(collected, 100);
   }
 
   /// The reason the key carries dimensions. The sidebar wants 24x12 and the
