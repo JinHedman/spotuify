@@ -87,7 +87,11 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
   // Row 2: time and playback state, centred over the bar beneath them.
   let vol = playback.device.volume_percent.unwrap_or(0);
   let mut status = vec![Span::styled(
-    format!("{} / {}", format_ms(progress_ms), format_ms(duration_ms)),
+    format!(
+      "{} / {}",
+      crate::ui::format::ms(progress_ms),
+      crate::ui::format::ms(duration_ms)
+    ),
     Style::default().fg(theme.hint),
   )];
   status.push(Span::raw("    "));
@@ -279,13 +283,6 @@ fn unknown_from_json(json: &Value) -> (String, String, String, u64) {
     .and_then(|v| v.as_u64())
     .unwrap_or(0);
   (name, artists, album, duration_ms)
-}
-
-fn format_ms(ms: u64) -> String {
-  let total_secs = ms / 1000;
-  let minutes = total_secs / 60;
-  let seconds = total_secs % 60;
-  format!("{minutes}:{seconds:02}")
 }
 
 #[cfg(test)]

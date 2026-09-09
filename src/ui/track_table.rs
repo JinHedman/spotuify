@@ -82,7 +82,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
         Cell::from(t.name.clone()),
         Cell::from(t.artists.clone()),
         Cell::from(t.album.clone()),
-        Cell::from(format_ms(t.duration_ms)),
+        Cell::from(crate::ui::format::ms(t.duration_ms)),
       ]);
       if current {
         // Foreground only, so it composes with the selection background when
@@ -135,13 +135,6 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut AppState) {
     state.track_list.len(),
     &theme,
   );
-}
-
-fn format_ms(ms: u64) -> String {
-  let total_secs = ms / 1000;
-  let minutes = total_secs / 60;
-  let seconds = total_secs % 60;
-  format!("{minutes}:{seconds:02}")
 }
 
 #[cfg(test)]
