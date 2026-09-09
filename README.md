@@ -101,7 +101,7 @@ All keys except `Ctrl+C` are remappable via `config.yml` (see below).
   - **Podcasts** → saved-show list → Enter loads episodes → Enter plays
   - **Recently Played** → recently played tracks (deduped)
 - **TrackTable** — columns for #, Title, Artist, Album, Time. `Enter` plays from selected position. Supports playing from playlist/album contexts or standalone URI lists.
-- **Search** — `/` to open. Submits to Spotify search with 4 tabs (Tracks / Albums / Artists / Playlists). Enter on a track plays; Enter on album/artist/playlist opens it in TrackTable.
+- **Search** — `/` to open. Results render as tables matching the track table: Tracks get `#` / Title / Artist / Album / Time with the now-playing marker, Albums get `#` / Album / Artist / Year, Artists get `#` / Artist. Each tab keeps its own scroll position, with the same scrolloff margin and overflow-only scrollbar as every other list. Enter on a track plays; Enter on an album or artist opens it.
 - **Queue** — `Q` shows currently playing + upcoming. `A` from TrackTable / ShowEpisodes / search-track-results adds the selected item to the queue.
 - **Device selector** — `d` lists your Spotify Connect devices. `Enter` transfers playback.
 - **Playback control** — play/pause, next/prev, seek, volume, shuffle (`z`), repeat (`R`).

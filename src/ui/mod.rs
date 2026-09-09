@@ -3,6 +3,7 @@ pub mod banner;
 pub mod basic_view;
 pub mod dialog;
 pub mod followed_artists;
+pub mod format;
 pub mod help;
 pub mod layout;
 pub mod legend;
@@ -161,7 +162,7 @@ pub fn draw(frame: &mut Frame, state: &Arc<Mutex<AppState>>) {
 
   match state.active_block {
     ActiveBlock::SearchInput | ActiveBlock::SearchResults if showing_search => {
-      search_results::draw(frame, content_area, &state);
+      search_results::draw(frame, content_area, &mut state);
     }
     ActiveBlock::SavedAlbums => saved_albums::draw(frame, content_area, &mut state),
     ActiveBlock::FollowedArtists => followed_artists::draw(frame, content_area, &mut state),

@@ -222,6 +222,13 @@ pub struct SearchResults {
   pub tracks_index: usize,
   pub albums_index: usize,
   pub artists_index: usize,
+  // Scroll offsets, one per tab, so switching tabs keeps each list where it
+  // was. Every other list pane carries its own offset; search relied on the
+  // List widget's implicit scrolling, which meant no scrolloff margin and no
+  // scrollbar.
+  pub tracks_offset: usize,
+  pub albums_offset: usize,
+  pub artists_offset: usize,
 }
 
 pub struct ArtistView {

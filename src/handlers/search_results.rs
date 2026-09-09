@@ -38,6 +38,14 @@ pub(super) async fn handle(
     move_selection(state, -5);
     return;
   }
+  if keys.move_top.matches(&key) {
+    set_selection(state, 0);
+    return;
+  }
+  if keys.move_bottom.matches(&key) {
+    set_selection(state, i32::MAX);
+    return;
+  }
   if keys.add_to_queue.matches(&key) {
     let uri = {
       let s = state.lock().unwrap();
@@ -121,6 +129,15 @@ fn pick_event(state: &AppState) -> Option<PickEvent> {
 }
 
 fn move_selection(state: &Mutex<AppState>, delta: i32) {
+  adjust(state, |cur, _| cur.saturating_add(delta));
+}
+
+/// Jump to an absolute row. `i32::MAX` lands on the last one.
+fn set_selection(state: &Mutex<AppState>, to: i32) {
+  adjust(state, |_, _| to);
+}
+
+fn adjust(state: &Mutex<AppState>, f: impl Fn(i32, usize) -> i32) {
   let mut s = state.lock().unwrap();
   let max_len = match s.search_tab {
     SearchTab::Tracks => s.search_results.tracks.len(),
@@ -135,6 +152,6 @@ fn move_selection(state: &Mutex<AppState>, delta: i32) {
     SearchTab::Albums => &mut s.search_results.albums_index,
     SearchTab::Artists => &mut s.search_results.artists_index,
   };
-  let cur = *idx_mut as i32 + delta;
-  *idx_mut = cur.clamp(0, max_len as i32 - 1) as usize;
+  let next = f(*idx_mut as i32, max_len);
+  *idx_mut = next.clamp(0, max_len as i32 - 1) as usize;
 }

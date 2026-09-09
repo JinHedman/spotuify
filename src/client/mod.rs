@@ -755,9 +755,13 @@ impl Network {
           Some(offset),
         )
         .await?;
-      let got = page.items.len() as u32;
+      // `page.next`, not a short page. Spotify filters unavailable entries out
+      // of a page *after* applying `limit`, so a page of 17 does not mean the
+      // discography is exhausted — stopping there drops albums from the middle
+      // of the list. Same fault the playlist listing had before a9d58d1.
+      let has_next = page.next.is_some();
       albums.extend(page.items);
-      if got < PAGE_LIMIT || albums.len() >= MAX_ALBUMS {
+      if !has_next || albums.len() >= MAX_ALBUMS {
         break;
       }
       offset += PAGE_LIMIT;
