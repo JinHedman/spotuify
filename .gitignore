@@ -7,3 +7,7 @@ Cargo.lock.bak
 client.yml
 .token_cache.json
 *.log
+
+# Local working notes — handover, structure, API reference.
+# Deliberately untracked: the repo is public and these are internal.
+notes/
