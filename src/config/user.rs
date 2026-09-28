@@ -106,11 +106,11 @@ impl UserConfig {
         );
       }
     };
-    match serde_yaml::from_str::<UserConfigFile>(&raw) {
+    match serde_norway::from_str::<UserConfigFile>(&raw) {
       Ok(file) => (file, None),
       Err(err) => (
         UserConfigFile::default(),
-        // serde_yaml reports line and column, which is the whole point of
+        // serde_norway reports line and column, which is the whole point of
         // surfacing this rather than a generic "config invalid".
         Some(format!(
           "{} is invalid ({err}) — using defaults",
@@ -193,6 +193,10 @@ mod tests {
     assert!(
       problem.contains("notacolour"),
       "message should name the offending value: {problem}"
+    );
+    assert!(
+      problem.contains("line 2 column"),
+      "message should carry the parse position: {problem}"
     );
   }
 }

@@ -39,14 +39,14 @@ impl ClientConfig {
   fn load(path: &Path) -> Result<Self> {
     let raw =
       std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    serde_yaml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+    serde_norway::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
   }
 
   fn save(&self, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
       std::fs::create_dir_all(parent)?;
     }
-    let yaml = serde_yaml::to_string(self)?;
+    let yaml = serde_norway::to_string(self)?;
     std::fs::write(path, yaml).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
   }
