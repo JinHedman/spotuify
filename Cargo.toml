@@ -24,6 +24,13 @@ rspotify = { version = "0.16", default-features = false, features = [
   "client-reqwest",
   "reqwest-rustls-tls",
 ] }
+# Not used directly: unifies features with rspotify's reqwest so rustls also
+# trusts the OS certificate store (corporate proxies, custom CAs). The bundled
+# webpki roots from `reqwest-rustls-tls` stay as a fallback for systems with no
+# CA bundle installed; reqwest loads both into one root store.
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls-native-roots",
+] }
 
 tokio = { version = "1", features = [
   "rt-multi-thread",
