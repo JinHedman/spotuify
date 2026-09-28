@@ -1,4 +1,4 @@
-use crate::app::{ActiveBlock, AppState};
+use crate::app::{lock, ActiveBlock, AppState};
 use crate::client::IoEvent;
 use crate::config::keys::KeyBindings;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -13,23 +13,26 @@ pub(super) async fn handle(
 ) {
   match key.code {
     KeyCode::Esc => {
-      let mut s = state.lock().unwrap();
+      let mut s = lock(state);
       s.pop_block();
     }
     KeyCode::Enter => {
-      let query = state.lock().unwrap().search_query.trim().to_string();
+      let query = lock(state).search_query.trim().to_string();
       if !query.is_empty() {
-        let _ = io_tx.send(IoEvent::Search(query)).await;
-        let mut s = state.lock().unwrap();
-        s.active_block = ActiveBlock::SearchResults;
-        s.block_history.clear();
+        // On a drop the input stays open with the query intact, so Enter
+        // retries it.
+        if super::send_io(state, io_tx, IoEvent::Search(query)) {
+          let mut s = lock(state);
+          s.active_block = ActiveBlock::SearchResults;
+          s.block_history.clear();
+        }
       }
     }
     KeyCode::Backspace => {
-      state.lock().unwrap().search_query.pop();
+      lock(state).search_query.pop();
     }
     KeyCode::Char(c) => {
-      state.lock().unwrap().search_query.push(c);
+      lock(state).search_query.push(c);
     }
     _ => {}
   }

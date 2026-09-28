@@ -1,4 +1,4 @@
-use crate::app::{ActiveBlock, AppState};
+use crate::app::{lock, ActiveBlock, AppState};
 use crate::client::IoEvent;
 use crate::config::keys::KeyBindings;
 use crossterm::event::KeyEvent;
@@ -18,7 +18,7 @@ pub(super) async fn handle(
     } else {
       1
     };
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     if !s.saved_shows.is_empty() {
       s.saved_shows_index = (s.saved_shows_index + step).min(s.saved_shows.len() - 1);
     }
@@ -26,22 +26,26 @@ pub(super) async fn handle(
   }
   if keys.move_up.matches(&key) || keys.move_up_big.matches(&key) {
     let step = if keys.move_up_big.matches(&key) { 5 } else { 1 };
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.saved_shows_index = s.saved_shows_index.saturating_sub(step);
     return;
   }
   if keys.activate.matches(&key) {
     let info = {
-      let s = state.lock().unwrap();
+      let s = lock(state);
       s.saved_shows
         .get(s.saved_shows_index)
         .map(|sh| (sh.show.id.id().to_string(), sh.show.name.clone()))
     };
     if let Some((show_id, show_name)) = info {
-      let _ = io_tx
-        .send(IoEvent::GetShowEpisodes { show_id, show_name })
-        .await;
-      state.lock().unwrap().push_block(ActiveBlock::ShowEpisodes);
+      let sent = super::send_io(
+        state,
+        io_tx,
+        IoEvent::GetShowEpisodes { show_id, show_name },
+      );
+      if sent {
+        lock(state).push_block(ActiveBlock::ShowEpisodes);
+      }
     }
   }
 }

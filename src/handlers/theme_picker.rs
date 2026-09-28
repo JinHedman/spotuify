@@ -1,4 +1,4 @@
-use crate::app::AppState;
+use crate::app::{lock, AppState};
 use crate::client::IoEvent;
 use crate::config::keys::KeyBindings;
 use crate::config::presets::{PresetKind, PRESETS};
@@ -17,7 +17,7 @@ pub(super) async fn handle(
 ) {
   // Cancel: revert to the saved theme and close.
   if keys.quit.matches(&key) || keys.back.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.cancel_theme_preview();
     s.pop_block();
     return;
@@ -34,7 +34,7 @@ pub(super) async fn handle(
     // doing so would persist its name into .selected_theme, and restoring it
     // next launch would select an entry that is not a theme at all.
     let toggled = {
-      let mut s = state.lock().unwrap();
+      let mut s = lock(state);
       let on_toggle = PRESETS
         .get(s.theme_picker_index)
         .is_some_and(|p| p.kind == PresetKind::AfterDark);
@@ -61,7 +61,7 @@ pub(super) async fn handle(
   // continue; the in-session theme still stays.
   if matches!(key.code, KeyCode::Enter) {
     let name = {
-      let mut s = state.lock().unwrap();
+      let mut s = lock(state);
       s.theme_before_preview = None;
       s.pop_block();
       PRESETS.get(s.theme_picker_index).map(|p| p.name)
@@ -75,28 +75,28 @@ pub(super) async fn handle(
   }
 
   if keys.move_down.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.theme_picker_index = (s.theme_picker_index + 1).min(PRESETS.len().saturating_sub(1));
     let (index, ms) = (s.theme_picker_index, s.config.behavior.theme_transition_ms);
     s.select_preset(index, Duration::from_millis(ms));
     return;
   }
   if keys.move_up.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.theme_picker_index = s.theme_picker_index.saturating_sub(1);
     let (index, ms) = (s.theme_picker_index, s.config.behavior.theme_transition_ms);
     s.select_preset(index, Duration::from_millis(ms));
     return;
   }
   if keys.move_top.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.theme_picker_index = 0;
     let (index, ms) = (s.theme_picker_index, s.config.behavior.theme_transition_ms);
     s.select_preset(index, Duration::from_millis(ms));
     return;
   }
   if keys.move_bottom.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.theme_picker_index = PRESETS.len().saturating_sub(1);
     let (index, ms) = (s.theme_picker_index, s.config.behavior.theme_transition_ms);
     s.select_preset(index, Duration::from_millis(ms));

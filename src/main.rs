@@ -6,7 +6,7 @@ mod handlers;
 mod ui;
 
 use anyhow::Result;
-use app::AppState;
+use app::{lock, AppState};
 use clap::Parser;
 use client::{IoEvent, Network};
 use config::client::ClientConfig;
@@ -22,6 +22,7 @@ use ratatui::DefaultTerminal;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::task::{JoinError, JoinHandle};
 use tokio::time;
 use tracing::warn;
 
@@ -109,7 +110,7 @@ async fn main() -> Result<()> {
   let (io_tx, io_rx) = mpsc::channel::<IoEvent>(64);
 
   let network = Network::new(spotify, Arc::clone(&state));
-  let network_handle = tokio::spawn(network.run(io_rx));
+  let mut network_handle = tokio::spawn(network.run(io_rx));
 
   let terminal = ratatui::init();
   let result = run(
@@ -117,27 +118,68 @@ async fn main() -> Result<()> {
     Arc::clone(&state),
     io_tx.clone(),
     Arc::clone(&user_cfg),
+    &mut network_handle,
   )
   .await;
+  // Restored before `result` is returned, so an error (including the network
+  // task dying) prints on a normal terminal rather than inside the alt screen.
   ratatui::restore();
 
-  let _ = io_tx.send(IoEvent::Shutdown).await;
+  // `try_send`: an awaiting send on a full channel would hang quit before the
+  // grace timeout below ever started. A missed sentinel is covered by closing
+  // the channel and then by the timeout.
+  let _ = io_tx.try_send(IoEvent::Shutdown);
   // Drop our sender so the channel closes even if the sentinel was missed
   // (a full channel, or a task that already exited). Without this, `recv()`
   // in the network task blocks forever and the await below never returns.
   drop(io_tx);
-  // Bounded: a cover render can be mid-ffmpeg when we quit, and waiting on it
-  // would stall the exit by up to COVER_TIMEOUT. Nothing in the network task
-  // holds unsaved state — cache writes are atomic via rename — so abandoning
-  // it is safe, and a prompt exit matters more than a tidy join.
-  if tokio::time::timeout(SHUTDOWN_GRACE, network_handle)
-    .await
-    .is_err()
-  {
-    tracing::warn!("network task did not stop within {SHUTDOWN_GRACE:?}");
-  }
+  let poisoned = matches!(&result, Err(e) if e.is::<StatePoisoned>());
+  // Only errs when poisoned, and then its error (how the task ended) is the
+  // one worth printing, so it takes precedence over `result`.
+  let exit = finish_network(network_handle, poisoned).await;
+  exit.and(result)
+}
 
-  result
+/// Returned by `run` when the shared state is poisoned. `main` replaces it
+/// with how the network task ended, which explains why.
+#[derive(Debug)]
+struct StatePoisoned;
+
+impl std::fmt::Display for StatePoisoned {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str("network task failed and left shared state unusable")
+  }
+}
+
+impl std::error::Error for StatePoisoned {}
+
+/// Wait for the network task to stop, at most `SHUTDOWN_GRACE` in total.
+/// This is the only wait on the handle, so exit cannot take longer.
+///
+/// Bounded: a cover render can be mid-ffmpeg when we quit, and waiting on it
+/// would stall the exit by up to COVER_TIMEOUT. Nothing in the network task
+/// holds unsaved state — cache writes are atomic via rename — so abandoning
+/// it is safe, and a prompt exit matters more than a tidy join.
+///
+/// `poisoned`: the task is known to have failed, so its exit is returned as
+/// the error. Otherwise a finished task is skipped, since `run` may already
+/// have consumed its output and polling a spent `JoinHandle` panics.
+async fn finish_network(handle: JoinHandle<()>, poisoned: bool) -> Result<()> {
+  if !poisoned && handle.is_finished() {
+    return Ok(());
+  }
+  match time::timeout(SHUTDOWN_GRACE, handle).await {
+    Ok(res) if poisoned => Err(network_exit_error(res)),
+    Ok(_) => Ok(()),
+    Err(_) => {
+      warn!("network task did not stop within {SHUTDOWN_GRACE:?}");
+      if poisoned {
+        Err(StatePoisoned.into())
+      } else {
+        Ok(())
+      }
+    }
+  }
 }
 
 async fn run(
@@ -145,21 +187,34 @@ async fn run(
   state: Arc<Mutex<AppState>>,
   io_tx: mpsc::Sender<IoEvent>,
   user_cfg: Arc<UserConfig>,
+  network: &mut JoinHandle<()>,
 ) -> Result<()> {
-  let _ = io_tx.send(IoEvent::GetCurrentPlayback).await;
-  let _ = io_tx.send(IoEvent::GetPlaylists).await;
+  let pending = lock(&state).pending_io.clone();
+  pending.send(&io_tx, IoEvent::GetCurrentPlayback);
+  handlers::send_io(&state, &io_tx, IoEvent::GetPlaylists);
 
   let mut events = EventStream::new();
   let mut poll = time::interval(Duration::from_millis(user_cfg.behavior.poll_interval_ms));
   poll.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
   loop {
+    // A panic in the network task while it held the lock poisons it. Stop
+    // here and report the task's exit, which explains why. A panic that lands
+    // mid-iteration is survived by `app::lock`, which recovers the guard, so
+    // the handler finishes and this check catches it on the next pass.
+    //
+    // Not awaited here: main does the one bounded wait on the handle, so
+    // exit takes at most SHUTDOWN_GRACE.
+    if state.is_poisoned() {
+      return Err(StatePoisoned.into());
+    }
+
     terminal.draw(|f| ui::draw(f, &state))?;
 
     // Redraw faster while anything is mid-animation. At the default 200ms
     // tick a 350ms fade would paint two intermediate frames, which reads as a
     // stutter rather than a transition. Reverts to the configured tick as
     // soon as nothing is animating, so the idle cost is unchanged.
-    let fading = { state.lock().unwrap().needs_fast_redraw() };
+    let fading = lock(&state).needs_fast_redraw();
     let redraw_in = if fading {
       Duration::from_millis(TRANSITION_FRAME_MS)
     } else {
@@ -167,9 +222,17 @@ async fn run(
     };
 
     tokio::select! {
+      // The network task only ends on Shutdown, which is sent after this
+      // loop returns. Ending earlier means it panicked; without this branch
+      // the UI would keep drawing stale state with nothing serving requests.
+      res = &mut *network => return Err(network_exit_error(res)),
       _ = time::sleep(redraw_in) => {}
       _ = poll.tick() => {
-        let _ = io_tx.send(IoEvent::GetCurrentPlayback).await;
+        // Never awaits: if the network task is stalled the channel fills, and
+        // an awaiting send here would stop redraws and key handling with it.
+        // At most one poll is queued; later ticks are dropped until it is
+        // dequeued.
+        pending.send(&io_tx, IoEvent::GetCurrentPlayback);
       }
       maybe_evt = events.next() => {
         let Some(evt) = maybe_evt else { return Ok(()) };
@@ -186,10 +249,70 @@ async fn run(
   }
 }
 
+/// Describe how the network task ended, for the message printed after the
+/// terminal is restored.
+fn network_exit_error(res: Result<(), JoinError>) -> anyhow::Error {
+  match res {
+    Ok(()) => anyhow::anyhow!("network task stopped unexpectedly"),
+    Err(err) if err.is_panic() => {
+      let payload = err.into_panic();
+      let msg = payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string());
+      anyhow::anyhow!("network task panicked: {msg}")
+    }
+    Err(err) => anyhow::anyhow!("network task ended: {err}"),
+  }
+}
+
 fn install_panic_hook() {
   let default_hook = std::panic::take_hook();
   std::panic::set_hook(Box::new(move |info| {
     ratatui::restore();
     default_hook(info);
   }));
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[tokio::test]
+  async fn network_panic_is_reported_with_its_message() {
+    let res = tokio::spawn(async { panic!("boom") }).await;
+    let msg = network_exit_error(res).to_string();
+    assert_eq!(msg, "network task panicked: boom");
+  }
+
+  /// The poison path used to wait a full grace in `run` and then another in
+  /// `main` on the same handle. A task that never stops must be abandoned
+  /// after one.
+  #[tokio::test]
+  async fn poisoned_exit_waits_one_grace_at_most() {
+    let stuck = tokio::spawn(std::future::pending::<()>());
+    let started = std::time::Instant::now();
+    let err = finish_network(stuck, true).await.unwrap_err();
+    let waited = started.elapsed();
+    assert!(err.is::<StatePoisoned>());
+    assert!(waited >= SHUTDOWN_GRACE);
+    assert!(waited < SHUTDOWN_GRACE * 2, "waited {waited:?}");
+  }
+
+  #[tokio::test]
+  async fn poisoned_exit_reports_how_the_task_ended() {
+    let crashed = tokio::spawn(async { panic!("boom") });
+    let err = finish_network(crashed, true).await.unwrap_err();
+    assert_eq!(err.to_string(), "network task panicked: boom");
+  }
+
+  #[tokio::test]
+  async fn early_clean_exit_is_still_an_error() {
+    let res = tokio::spawn(async {}).await;
+    assert_eq!(
+      network_exit_error(res).to_string(),
+      "network task stopped unexpectedly"
+    );
+  }
 }

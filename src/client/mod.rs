@@ -3,6 +3,7 @@ use crate::app::{
   NOWPLAYING_ROWS,
 };
 use anyhow::{Context, Result};
+use backoff::{Failure, PollBackoff};
 use rspotify::model::playlist::SimplifiedPlaylist;
 use rspotify::model::{
   AdditionalType, AlbumId, AlbumType, ArtistId, EpisodeId, LibraryId, Market, Offset,
@@ -12,9 +13,12 @@ use rspotify::model::{
 use rspotify::{prelude::*, AuthCodeSpotify};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::warn;
+
+pub mod backoff;
+pub mod pending;
 
 #[derive(Debug, Clone)]
 pub enum IoEvent {
@@ -81,17 +85,175 @@ pub enum IoEvent {
   Shutdown,
 }
 
+impl IoEvent {
+  /// Variant name for logs and notices. `{:?}` would dump payloads such as
+  /// whole URI lists onto the status line.
+  pub fn name(&self) -> &'static str {
+    match self {
+      IoEvent::GetCurrentPlayback => "GetCurrentPlayback",
+      IoEvent::GetPlaylists => "GetPlaylists",
+      IoEvent::RefreshPlaylistCover => "RefreshPlaylistCover",
+      IoEvent::GetPlaylistTracks { .. } => "GetPlaylistTracks",
+      IoEvent::GetSavedTracks => "GetSavedTracks",
+      IoEvent::GetAlbumTracks { .. } => "GetAlbumTracks",
+      IoEvent::OpenArtist { .. } => "OpenArtist",
+      IoEvent::Search(_) => "Search",
+      IoEvent::GetDevices => "GetDevices",
+      IoEvent::TransferPlayback(_) => "TransferPlayback",
+      IoEvent::GetSavedAlbums => "GetSavedAlbums",
+      IoEvent::GetFollowedArtists => "GetFollowedArtists",
+      IoEvent::GetRecentlyPlayed => "GetRecentlyPlayed",
+      IoEvent::ToggleSaveTrack(_) => "ToggleSaveTrack",
+      IoEvent::ToggleSaveAlbum(_) => "ToggleSaveAlbum",
+      IoEvent::ToggleFollowArtist(_) => "ToggleFollowArtist",
+      IoEvent::ToggleShuffle => "ToggleShuffle",
+      IoEvent::CycleRepeat => "CycleRepeat",
+      IoEvent::UnfollowPlaylist(_) => "UnfollowPlaylist",
+      IoEvent::GetSavedShows => "GetSavedShows",
+      IoEvent::GetShowEpisodes { .. } => "GetShowEpisodes",
+      IoEvent::GetQueue => "GetQueue",
+      IoEvent::AddToQueue(_) => "AddToQueue",
+      IoEvent::PlayUri(_) => "PlayUri",
+      IoEvent::PausePlayback => "PausePlayback",
+      IoEvent::ResumePlayback => "ResumePlayback",
+      IoEvent::NextTrack => "NextTrack",
+      IoEvent::PreviousTrack => "PreviousTrack",
+      IoEvent::ChangeVolume(_) => "ChangeVolume",
+      IoEvent::Seek(_) => "Seek",
+      IoEvent::PlayTrackInContext { .. } => "PlayTrackInContext",
+      IoEvent::PlayTrackUris { .. } => "PlayTrackUris",
+      IoEvent::Shutdown => "Shutdown",
+    }
+  }
+
+  /// What the user would call this, for status-line notices such as
+  /// "Next track failed: …". Spelled out per variant rather than derived from
+  /// `name()`, which yields identifiers like "Play track uris".
+  pub fn label(&self) -> &'static str {
+    match self {
+      IoEvent::GetCurrentPlayback => "Playback update",
+      IoEvent::GetPlaylists => "Load playlists",
+      IoEvent::RefreshPlaylistCover => "Load playlist cover",
+      IoEvent::GetPlaylistTracks { .. } => "Load playlist",
+      IoEvent::GetSavedTracks => "Load liked songs",
+      IoEvent::GetAlbumTracks { .. } => "Load album",
+      IoEvent::OpenArtist { .. } => "Load artist",
+      IoEvent::Search(_) => "Search",
+      IoEvent::GetDevices => "Load devices",
+      IoEvent::TransferPlayback(_) => "Switch device",
+      IoEvent::GetSavedAlbums => "Load albums",
+      IoEvent::GetFollowedArtists => "Load artists",
+      IoEvent::GetRecentlyPlayed => "Load recently played",
+      IoEvent::ToggleSaveTrack(_) => "Save track",
+      IoEvent::ToggleSaveAlbum(_) => "Save album",
+      IoEvent::ToggleFollowArtist(_) => "Follow artist",
+      IoEvent::ToggleShuffle => "Shuffle",
+      IoEvent::CycleRepeat => "Repeat",
+      IoEvent::UnfollowPlaylist(_) => "Remove playlist",
+      IoEvent::GetSavedShows => "Load podcasts",
+      IoEvent::GetShowEpisodes { .. } => "Load episodes",
+      IoEvent::GetQueue => "Load queue",
+      IoEvent::AddToQueue(_) => "Add to queue",
+      IoEvent::PlayUri(_) | IoEvent::PlayTrackInContext { .. } | IoEvent::PlayTrackUris { .. } => {
+        "Play"
+      }
+      IoEvent::PausePlayback => "Pause",
+      IoEvent::ResumePlayback => "Resume",
+      IoEvent::NextTrack => "Next track",
+      IoEvent::PreviousTrack => "Previous track",
+      IoEvent::ChangeVolume(_) => "Volume",
+      IoEvent::Seek(_) => "Seek",
+      IoEvent::Shutdown => "Shutdown",
+    }
+  }
+}
+
+/// What `run` should show after one event.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+  /// Nothing to report.
+  Done,
+  /// Put this on the status line.
+  Notice(String),
+  /// A poll failed but its notice is still on screen; only clear the loading
+  /// flag.
+  Quiet,
+}
+
+/// One event's trip through the backoff: gate it, run it via `dispatch`,
+/// and turn a failure into a notice. Split out of `run` so the routing can be
+/// tested without Spotify.
+async fn process<F, Fut>(backoff: &mut PollBackoff, event: IoEvent, dispatch: F) -> Step
+where
+  F: FnOnce(IoEvent) -> Fut,
+  Fut: std::future::Future<Output = Result<()>>,
+{
+  let name = event.name();
+  let label = event.label();
+  let is_poll = matches!(event, IoEvent::GetCurrentPlayback);
+  // The cover render reads a CDN URL we already have; it never calls the Web
+  // API, so a rate limit is no reason to hold it back.
+  let calls_api = !matches!(event, IoEvent::RefreshPlaylistCover);
+  let now = Instant::now();
+  if is_poll {
+    // Suspended polls are dropped, not deferred: the UI sends a fresh one
+    // every tick, so the first tick after the window does the retry.
+    if !backoff.allows_poll(now) {
+      return Step::Done;
+    }
+  } else if calls_api {
+    // Hitting Spotify inside a 429 window only extends it.
+    if let Some(notice) = backoff.reject_action(label, now) {
+      return Step::Notice(notice);
+    }
+  }
+  let err = match dispatch(event).await {
+    Ok(()) => {
+      if is_poll {
+        backoff.on_success();
+      }
+      return Step::Done;
+    }
+    Err(err) => err,
+  };
+  warn!(%name, ?err, "network event failed");
+  let failure = Failure::classify(&err);
+  let now = Instant::now();
+  // A failed poll always backs off. Other requests only do on a 429, which
+  // applies to the whole app; their other failures are the user's to see and
+  // retry. Either way a user action is not retried, so its notice says it
+  // failed rather than "retrying".
+  if is_poll {
+    let detail = format!("{err:#}");
+    match backoff.on_failure(&failure, &detail, now) {
+      Some(notice) => Step::Notice(notice),
+      None => Step::Quiet,
+    }
+  } else if matches!(failure, Failure::RateLimited { .. }) {
+    Step::Notice(backoff.on_action_rate_limited(label, &failure, now))
+  } else {
+    Step::Notice(format!("{label} failed: {err:#}"))
+  }
+}
+
 pub struct Network {
   spotify: AuthCodeSpotify,
   state: Arc<Mutex<AppState>>,
+  pending: Arc<pending::PendingIo>,
 }
 
 impl Network {
   pub fn new(spotify: AuthCodeSpotify, state: Arc<Mutex<AppState>>) -> Self {
-    Self { spotify, state }
+    let pending = Arc::clone(&state.lock().unwrap().pending_io);
+    Self {
+      spotify,
+      state,
+      pending,
+    }
   }
 
   pub async fn run(self, mut rx: mpsc::Receiver<IoEvent>) {
+    let mut backoff = PollBackoff::default();
     while let Some(event) = rx.recv().await {
       // Shutdown is a sentinel, not work. Breaking here is what lets the task
       // finish: dispatching it returns Ok and the loop would go straight back
@@ -101,10 +263,15 @@ impl Network {
       if matches!(event, IoEvent::Shutdown) {
         break;
       }
-      let name = format!("{event:?}");
-      if let Err(err) = self.dispatch(event).await {
-        warn!(%name, ?err, "network event failed");
-        self.set_error(format!("{name}: {err:#}"));
+      // Released on dequeue, before the work: anything that changes while it
+      // runs (the cursor, the playing track) must be able to queue a fresh one.
+      if let Some(flag) = self.pending.flag_for(&event) {
+        flag.release();
+      }
+      match process(&mut backoff, event, |e| self.dispatch(e)).await {
+        Step::Done => {}
+        Step::Notice(notice) => self.set_error(notice),
+        Step::Quiet => self.set_loading(false),
       }
     }
   }
@@ -807,29 +974,30 @@ impl Network {
     let tracks_res = self.fetch_artist_tracks(artist_id, artist_name).await;
     let albums_res = self.fetch_artist_albums(artist_id).await;
 
-    let tracks_err = tracks_res.as_ref().err().map(|e| format!("{e:#}"));
-    let albums_err = albums_res.as_ref().err().map(|e| format!("{e:#}"));
-
-    {
+    let (tracks_err, albums_err) = {
       let mut s = self.state.lock().unwrap();
-      if let Ok((rows, fallback_only)) = tracks_res {
-        s.artist_view.tracks = rows;
-        // Drives the tab label. Without this the tab claims "Top tracks" while
-        // showing search results, which is what made the removed endpoint look
-        // like a bug in this app.
-        s.artist_view.tracks_are_fallback = fallback_only;
-      }
-      if let Ok(albums) = albums_res {
-        s.artist_view.albums = albums;
-      }
-    }
+      let tracks_err = match tracks_res {
+        Ok((rows, fallback_only)) => {
+          s.artist_view.tracks = rows;
+          // Drives the tab label. Without this the tab claims "Top tracks" while
+          // showing search results, which is what made the removed endpoint look
+          // like a bug in this app.
+          s.artist_view.tracks_are_fallback = fallback_only;
+          None
+        }
+        Err(e) => Some(e),
+      };
+      let albums_err = match albums_res {
+        Ok(albums) => {
+          s.artist_view.albums = albums;
+          None
+        }
+        Err(e) => Some(e),
+      };
+      (tracks_err, albums_err)
+    };
 
-    match (tracks_err, albums_err) {
-      (None, None) => Ok(()),
-      (Some(e), None) => anyhow::bail!("artist tracks: {e}"),
-      (None, Some(e)) => anyhow::bail!("artist albums: {e}"),
-      (Some(t), Some(a)) => anyhow::bail!("artist tracks: {t}; albums: {a}"),
-    }
+    artist_view_result(tracks_err, albums_err)
   }
 
   async fn search(&self, query: &str) -> Result<()> {
@@ -897,6 +1065,11 @@ impl Network {
           }
           Ok(_) => true,
           Err(err) => {
+            // A 429 ends the search: the remaining pages and types would only
+            // extend the limit. Returned so `run` opens the rate-limit window.
+            if matches!(Failure::classify(&err), Failure::RateLimited { .. }) {
+              return Err(err);
+            }
             warn!(?err, r#type = ?t, offset, "search sub-query failed — skipping");
             // Only surface first-page errors — later pages failing is usually
             // "end of results" and not worth blaring at the user.
@@ -1576,10 +1749,174 @@ async fn render_cover(url: &str, cols: u16, rows: u16) -> Result<CoverArt> {
   Ok(CoverArt { cols, rows, cells })
 }
 
+/// Combines the two halves of the artist view into one result. The source
+/// errors are kept as the chain rather than flattened into a string, so
+/// `Failure::classify` still sees a 429 and opens the rate-limit window. When
+/// both fail, the rate-limited one wins for the same reason.
+fn artist_view_result(
+  tracks_err: Option<anyhow::Error>,
+  albums_err: Option<anyhow::Error>,
+) -> Result<()> {
+  match (tracks_err, albums_err) {
+    (None, None) => Ok(()),
+    (Some(t), None) => Err(t.context("artist tracks")),
+    (None, Some(a)) => Err(a.context("artist albums")),
+    (Some(t), Some(a)) => {
+      let a_limited = matches!(Failure::classify(&a), Failure::RateLimited { .. });
+      if a_limited {
+        Err(a.context(format!("artist albums (tracks also failed: {t:#})")))
+      } else {
+        Err(t.context(format!("artist tracks (albums also failed: {a:#})")))
+      }
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
   use std::io::Write;
+
+  #[test]
+  fn every_action_notice_uses_the_human_label() {
+    assert_eq!(IoEvent::NextTrack.label(), "Next track");
+    assert_eq!(
+      IoEvent::PlayTrackUris {
+        uris: vec![],
+        offset_index: 0
+      }
+      .label(),
+      "Play"
+    );
+    assert_eq!(IoEvent::PlayUri(String::new()).label(), "Play");
+    assert_eq!(
+      IoEvent::GetAlbumTracks {
+        album_id: String::new(),
+        album_name: String::new()
+      }
+      .label(),
+      "Load album"
+    );
+  }
+
+  /// Runs `event` through `process` with a fake dispatch that returns
+  /// `result` and counts how often Spotify would have been called.
+  async fn step(
+    backoff: &mut PollBackoff,
+    event: IoEvent,
+    result: fn() -> Result<()>,
+    calls: &std::cell::Cell<u32>,
+  ) -> Step {
+    process(backoff, event, |_| async move {
+      calls.set(calls.get() + 1);
+      result()
+    })
+    .await
+  }
+
+  fn limited() -> Result<()> {
+    Err(backoff::status_error(429, Some("30")))
+  }
+
+  #[test]
+  fn artist_view_errors_keep_the_429_for_classify() {
+    let limited = || backoff::status_error(429, Some("30"));
+    let other = || backoff::status_error(500, None);
+    let is_limited = |r: Result<()>| {
+      matches!(
+        Failure::classify(&r.unwrap_err()),
+        Failure::RateLimited { .. }
+      )
+    };
+
+    assert!(artist_view_result(None, None).is_ok());
+    assert!(is_limited(artist_view_result(Some(limited()), None)));
+    assert!(is_limited(artist_view_result(None, Some(limited()))));
+    assert!(is_limited(artist_view_result(
+      Some(other()),
+      Some(limited())
+    )));
+    assert!(is_limited(artist_view_result(
+      Some(limited()),
+      Some(other())
+    )));
+    assert!(!is_limited(artist_view_result(
+      Some(other()),
+      Some(other())
+    )));
+  }
+
+  fn ok() -> Result<()> {
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn poll_429_suspends_polling_with_the_poll_notice() {
+    let mut b = PollBackoff::default();
+    let calls = std::cell::Cell::new(0);
+    let got = step(&mut b, IoEvent::GetCurrentPlayback, limited, &calls).await;
+    assert_eq!(got, Step::Notice("Rate limited, retrying in 30s".into()));
+    assert!(!b.allows_poll(Instant::now()));
+
+    // The next poll is skipped without calling Spotify.
+    let got = step(&mut b, IoEvent::GetCurrentPlayback, ok, &calls).await;
+    assert_eq!(got, Step::Done);
+    assert_eq!(calls.get(), 1);
+  }
+
+  #[tokio::test]
+  async fn action_429_names_the_action_and_suspends_polling() {
+    let mut b = PollBackoff::default();
+    let calls = std::cell::Cell::new(0);
+    let got = step(&mut b, IoEvent::NextTrack, limited, &calls).await;
+    assert_eq!(
+      got,
+      Step::Notice("Next track failed: rate limited, try again in 30s".into())
+    );
+    assert!(!b.allows_poll(Instant::now()));
+  }
+
+  #[tokio::test]
+  async fn action_inside_a_rate_limit_window_never_reaches_spotify() {
+    let mut b = PollBackoff::default();
+    let calls = std::cell::Cell::new(0);
+    step(&mut b, IoEvent::GetCurrentPlayback, limited, &calls).await;
+    assert_eq!(calls.get(), 1);
+
+    let got = step(&mut b, IoEvent::Search("abba".into()), ok, &calls).await;
+    assert_eq!(
+      got,
+      Step::Notice("Search failed: rate limited, try again in 30s".into())
+    );
+    assert_eq!(calls.get(), 1, "refused locally");
+
+    // The cover render does not use the Web API, so it still runs.
+    let got = step(&mut b, IoEvent::RefreshPlaylistCover, ok, &calls).await;
+    assert_eq!(got, Step::Done);
+    assert_eq!(calls.get(), 2);
+  }
+
+  #[tokio::test]
+  async fn other_action_failures_use_the_label_and_do_not_suspend() {
+    let mut b = PollBackoff::default();
+    let calls = std::cell::Cell::new(0);
+    let got = step(
+      &mut b,
+      IoEvent::PlayUri(String::new()),
+      || Err(backoff::status_error(500, None)),
+      &calls,
+    )
+    .await;
+    let Step::Notice(notice) = got else {
+      panic!("expected a notice, got {got:?}");
+    };
+    assert!(notice.starts_with("Play failed: "), "{notice}");
+    assert!(b.allows_poll(Instant::now()));
+    assert_eq!(
+      step(&mut b, IoEvent::NextTrack, ok, &calls).await,
+      Step::Done
+    );
+  }
 
   /// Writes a 48x48 PPM: top half pure red, bottom half pure blue.
   fn fixture(path: &std::path::Path) {

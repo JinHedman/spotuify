@@ -1,4 +1,4 @@
-use crate::app::{ActiveBlock, AppState};
+use crate::app::{lock, ActiveBlock, AppState};
 use crate::client::IoEvent;
 use crate::config::keys::KeyBindings;
 use crossterm::event::KeyEvent;
@@ -18,7 +18,7 @@ pub(super) async fn handle(
     } else {
       1
     };
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     if !s.saved_albums.is_empty() {
       s.saved_albums_index = (s.saved_albums_index + step).min(s.saved_albums.len() - 1);
     }
@@ -26,25 +26,29 @@ pub(super) async fn handle(
   }
   if keys.move_up.matches(&key) || keys.move_up_big.matches(&key) {
     let step = if keys.move_up_big.matches(&key) { 5 } else { 1 };
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.saved_albums_index = s.saved_albums_index.saturating_sub(step);
     return;
   }
   if keys.activate.matches(&key) {
     let info = {
-      let s = state.lock().unwrap();
+      let s = lock(state);
       s.saved_albums
         .get(s.saved_albums_index)
         .map(|sa| (sa.album.id.id().to_string(), sa.album.name.clone()))
     };
     if let Some((album_id, album_name)) = info {
-      let _ = io_tx
-        .send(IoEvent::GetAlbumTracks {
+      let sent = super::send_io(
+        state,
+        io_tx,
+        IoEvent::GetAlbumTracks {
           album_id,
           album_name,
-        })
-        .await;
-      state.lock().unwrap().push_block(ActiveBlock::TrackTable);
+        },
+      );
+      if sent {
+        lock(state).push_block(ActiveBlock::TrackTable);
+      }
     }
   }
 }

@@ -1,4 +1,4 @@
-use crate::app::{ActiveBlock, AppState, Dialog, DialogAction};
+use crate::app::{lock, ActiveBlock, AppState, Dialog, DialogAction};
 use crate::client::IoEvent;
 use crate::config::keys::KeyBindings;
 use crossterm::event::KeyEvent;
@@ -19,25 +19,25 @@ pub(super) async fn handle(
       1
     };
     {
-      let mut s = state.lock().unwrap();
+      let mut s = lock(state);
       if !s.playlists.is_empty() {
         s.playlists_index = (s.playlists_index + step).min(s.playlists.len() - 1);
       }
     }
-    let _ = io_tx.send(IoEvent::RefreshPlaylistCover).await;
+    send_cover_refresh(state, io_tx);
     return;
   }
   if keys.move_up.matches(&key) || keys.move_up_big.matches(&key) {
     let step = if keys.move_up_big.matches(&key) { 5 } else { 1 };
     {
-      let mut s = state.lock().unwrap();
+      let mut s = lock(state);
       s.playlists_index = s.playlists_index.saturating_sub(step);
     }
-    let _ = io_tx.send(IoEvent::RefreshPlaylistCover).await;
+    send_cover_refresh(state, io_tx);
     return;
   }
   if keys.delete_playlist.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     if let Some(p) = s.playlists.get(s.playlists_index) {
       let playlist_id = p.id.id().to_string();
       let name = p.name.clone();
@@ -51,19 +51,30 @@ pub(super) async fn handle(
   }
   if keys.activate.matches(&key) {
     let info = {
-      let s = state.lock().unwrap();
+      let s = lock(state);
       s.playlists
         .get(s.playlists_index)
         .map(|p| (p.id.id().to_string(), p.name.clone()))
     };
     if let Some((playlist_id, playlist_name)) = info {
-      let _ = io_tx
-        .send(IoEvent::GetPlaylistTracks {
+      let sent = super::send_io(
+        state,
+        io_tx,
+        IoEvent::GetPlaylistTracks {
           playlist_id,
           playlist_name,
-        })
-        .await;
-      state.lock().unwrap().active_block = ActiveBlock::TrackTable;
+        },
+      );
+      if sent {
+        lock(state).active_block = ActiveBlock::TrackTable;
+      }
     }
   }
+}
+
+/// Coalesced and non-blocking: holding j/k while the network task is stuck
+/// would otherwise fill the channel and freeze the UI on the next send.
+fn send_cover_refresh(state: &Mutex<AppState>, io_tx: &mpsc::Sender<IoEvent>) {
+  let pending = lock(state).pending_io.clone();
+  pending.send(io_tx, IoEvent::RefreshPlaylistCover);
 }

@@ -2325,6 +2325,7 @@ dependencies = [
  "crossterm",
  "directories",
  "futures",
+ "http",
  "pretty_assertions",
  "ratatui",
  "reqwest",
