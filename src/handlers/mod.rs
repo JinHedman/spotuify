@@ -13,7 +13,7 @@ mod show_episodes;
 mod theme_picker;
 mod track_table;
 
-use crate::app::{ActiveBlock, AppState};
+use crate::app::{lock, ActiveBlock, AppState};
 use crate::client::IoEvent;
 use crate::config::keys::KeyBindings;
 use crate::config::user::UserConfig;
@@ -36,7 +36,7 @@ pub(crate) fn send_io(state: &Mutex<AppState>, io_tx: &mpsc::Sender<IoEvent>, ev
     Ok(()) | Err(TrySendError::Closed(_)) => {}
     Err(TrySendError::Full(event)) => {
       warn!(name = event.name(), "network channel full, dropping action");
-      state.lock().unwrap().note_dropped_action();
+      lock(state).note_dropped_action();
     }
   }
 }
@@ -51,7 +51,7 @@ pub async fn handle_key(
   state: &Mutex<AppState>,
   io_tx: &mpsc::Sender<IoEvent>,
 ) -> KeyOutcome {
-  let config: Arc<UserConfig> = state.lock().unwrap().config.clone();
+  let config: Arc<UserConfig> = lock(state).config.clone();
   let keys: &KeyBindings = &config.keys;
   let behavior = &config.behavior;
 
@@ -64,8 +64,8 @@ pub async fn handle_key(
   }
 
   // Overlays get first crack.
-  if state.lock().unwrap().help_visible {
-    let mut s = state.lock().unwrap();
+  if lock(state).help_visible {
+    let mut s = lock(state);
     if keys.help.matches(&key) || keys.quit.matches(&key) || keys.back.matches(&key) {
       s.help_visible = false;
       return KeyOutcome::Continue;
@@ -90,7 +90,7 @@ pub async fn handle_key(
     return KeyOutcome::Continue;
   }
 
-  let active = state.lock().unwrap().active_block;
+  let active = lock(state).active_block;
 
   if active == ActiveBlock::Dialog {
     dialog::handle(key, state, io_tx, keys).await;
@@ -121,28 +121,28 @@ pub async fn handle_key(
     return KeyOutcome::Quit;
   }
   if keys.help.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.help_visible = true;
     // Always open at the top rather than wherever it was last left.
     s.help_scroll = 0;
     return KeyOutcome::Continue;
   }
   if keys.search.matches(&key) {
-    state.lock().unwrap().push_block(ActiveBlock::SearchInput);
+    lock(state).push_block(ActiveBlock::SearchInput);
     return KeyOutcome::Continue;
   }
   if keys.device.matches(&key) {
     send_io(state, io_tx, IoEvent::GetDevices);
-    state.lock().unwrap().push_block(ActiveBlock::SelectDevice);
+    lock(state).push_block(ActiveBlock::SelectDevice);
     return KeyOutcome::Continue;
   }
   if keys.queue.matches(&key) {
     send_io(state, io_tx, IoEvent::GetQueue);
-    state.lock().unwrap().push_block(ActiveBlock::Queue);
+    lock(state).push_block(ActiveBlock::Queue);
     return KeyOutcome::Continue;
   }
   if keys.play_pause.matches(&key) {
-    let is_playing = state.lock().unwrap().is_playing();
+    let is_playing = lock(state).is_playing();
     let ev = if is_playing {
       IoEvent::PausePlayback
     } else {
@@ -160,7 +160,7 @@ pub async fn handle_key(
     return KeyOutcome::Continue;
   }
   if keys.volume_up.matches(&key) {
-    let v = state.lock().unwrap().current_volume();
+    let v = lock(state).current_volume();
     send_io(
       state,
       io_tx,
@@ -169,7 +169,7 @@ pub async fn handle_key(
     return KeyOutcome::Continue;
   }
   if keys.volume_down.matches(&key) {
-    let v = state.lock().unwrap().current_volume();
+    let v = lock(state).current_volume();
     send_io(
       state,
       io_tx,
@@ -178,7 +178,7 @@ pub async fn handle_key(
     return KeyOutcome::Continue;
   }
   if keys.seek_backward.matches(&key) {
-    let progress = state.lock().unwrap().current_progress_ms();
+    let progress = lock(state).current_progress_ms();
     if let Some(p) = progress {
       send_io(
         state,
@@ -189,7 +189,7 @@ pub async fn handle_key(
     return KeyOutcome::Continue;
   }
   if keys.seek_forward.matches(&key) {
-    let progress = state.lock().unwrap().current_progress_ms();
+    let progress = lock(state).current_progress_ms();
     if let Some(p) = progress {
       send_io(state, io_tx, IoEvent::Seek(p + behavior.seek_step_ms));
     }
@@ -204,33 +204,33 @@ pub async fn handle_key(
     return KeyOutcome::Continue;
   }
   if keys.refresh.matches(&key) {
-    let pending = state.lock().unwrap().pending_io.clone();
+    let pending = lock(state).pending_io.clone();
     pending.send(io_tx, IoEvent::GetCurrentPlayback);
     return KeyOutcome::Continue;
   }
   if keys.save_track.matches(&key) {
-    let track_id = state.lock().unwrap().current_track_id();
+    let track_id = lock(state).current_track_id();
     if let Some(id) = track_id {
       send_io(state, io_tx, IoEvent::ToggleSaveTrack(id));
     }
     return KeyOutcome::Continue;
   }
   if keys.save_album.matches(&key) {
-    let album_id = state.lock().unwrap().current_album_id();
+    let album_id = lock(state).current_album_id();
     if let Some(id) = album_id {
       send_io(state, io_tx, IoEvent::ToggleSaveAlbum(id));
     }
     return KeyOutcome::Continue;
   }
   if keys.follow_artist.matches(&key) {
-    let artist_id = state.lock().unwrap().current_artist_id();
+    let artist_id = lock(state).current_artist_id();
     if let Some(id) = artist_id {
       send_io(state, io_tx, IoEvent::ToggleFollowArtist(id));
     }
     return KeyOutcome::Continue;
   }
   if keys.theme_picker.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.begin_theme_preview();
     // Default the cursor to whichever preset matches the current theme, so
     // the cancel/revert path is a no-op for users already on a preset.
@@ -252,27 +252,27 @@ pub async fn handle_key(
     return KeyOutcome::Continue;
   }
   if keys.block_left.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.active_block = s.active_block.go_left();
     return KeyOutcome::Continue;
   }
   if keys.block_right.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.active_block = s.active_block.go_right();
     return KeyOutcome::Continue;
   }
   if keys.block_up.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.active_block = s.active_block.go_up();
     return KeyOutcome::Continue;
   }
   if keys.block_down.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.active_block = s.active_block.go_down();
     return KeyOutcome::Continue;
   }
   if keys.back.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     if !s.pop_block() && !s.active_block.is_home() {
       s.active_block = ActiveBlock::Library;
     }
@@ -437,5 +437,26 @@ mod tests {
       state.lock().unwrap().notice(),
       Some(AppState::DROPPED_NOTICE)
     );
+  }
+
+  /// The network task can panic while holding the lock after the main loop's
+  /// poison check has passed. A handler must not panic a second time on the
+  /// poisoned mutex, or the UI's panic would bury the network task's error.
+  #[tokio::test]
+  async fn poisoned_state_does_not_panic_handlers() {
+    let state = Arc::new(test_state());
+    let poisoner = Arc::clone(&state);
+    let _ = std::thread::spawn(move || {
+      let _guard = poisoner.lock().unwrap();
+      panic!("network task panicked while holding the lock");
+    })
+    .join();
+    assert!(state.is_poisoned());
+
+    let (tx, _rx) = mpsc::channel::<IoEvent>(8);
+    for c in ['?', 'k', '?', 'n', '/'] {
+      handle_key(press(c), &state, &tx).await;
+    }
+    assert!(!lock(&state).help_visible);
   }
 }

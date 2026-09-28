@@ -6,7 +6,7 @@ mod handlers;
 mod ui;
 
 use anyhow::Result;
-use app::AppState;
+use app::{lock, AppState};
 use clap::Parser;
 use client::{IoEvent, Network};
 use config::client::ClientConfig;
@@ -19,7 +19,7 @@ use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
 use handlers::KeyOutcome;
 use ratatui::DefaultTerminal;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle};
@@ -158,7 +158,7 @@ async fn run(
   user_cfg: Arc<UserConfig>,
   network: &mut JoinHandle<()>,
 ) -> Result<()> {
-  let pending = state.lock().unwrap().pending_io.clone();
+  let pending = lock(&state).pending_io.clone();
   pending.send(&io_tx, IoEvent::GetCurrentPlayback);
   handlers::send_io(&state, &io_tx, IoEvent::GetPlaylists);
 
@@ -167,8 +167,9 @@ async fn run(
   poll.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
   loop {
     // A panic in the network task while it held the lock poisons it. Stop
-    // here rather than letting the next handler's `lock().unwrap()` panic a
-    // second time; the task is unwinding and its exit explains why.
+    // here and report the task's exit, which explains why. A panic that lands
+    // mid-iteration is survived by `app::lock`, which recovers the guard, so
+    // the handler finishes and this check catches it on the next pass.
     if state.is_poisoned() {
       let exit = time::timeout(SHUTDOWN_GRACE, &mut *network).await;
       return Err(match exit {
@@ -183,12 +184,7 @@ async fn run(
     // tick a 350ms fade would paint two intermediate frames, which reads as a
     // stutter rather than a transition. Reverts to the configured tick as
     // soon as nothing is animating, so the idle cost is unchanged.
-    let fading = {
-      state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .needs_fast_redraw()
-    };
+    let fading = lock(&state).needs_fast_redraw();
     let redraw_in = if fading {
       Duration::from_millis(TRANSITION_FRAME_MS)
     } else {

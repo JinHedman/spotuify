@@ -1,4 +1,4 @@
-use crate::app::AppState;
+use crate::app::{lock, AppState};
 use crate::client::IoEvent;
 use crate::config::keys::KeyBindings;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -16,7 +16,7 @@ pub(super) async fn handle(
     || keys.queue.matches(&key)
     || keys.back.matches(&key)
   {
-    state.lock().unwrap().pop_block();
+    lock(state).pop_block();
     return;
   }
   if keys.move_down.matches(&key) || keys.move_down_big.matches(&key) {
@@ -25,7 +25,7 @@ pub(super) async fn handle(
     } else {
       1
     };
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     if !s.queue_items.is_empty() {
       s.queue_index = (s.queue_index + step).min(s.queue_items.len() - 1);
     }
@@ -33,7 +33,7 @@ pub(super) async fn handle(
   }
   if keys.move_up.matches(&key) || keys.move_up_big.matches(&key) {
     let step = if keys.move_up_big.matches(&key) { 5 } else { 1 };
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.queue_index = s.queue_index.saturating_sub(step);
     return;
   }

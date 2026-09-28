@@ -1,4 +1,4 @@
-use crate::app::{ActiveBlock, AppState};
+use crate::app::{lock, ActiveBlock, AppState};
 use crate::client::IoEvent;
 use crate::config::keys::KeyBindings;
 use crossterm::event::KeyEvent;
@@ -18,7 +18,7 @@ pub(super) async fn handle(
     } else {
       1
     };
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     if !s.followed_artists.is_empty() {
       s.followed_artists_index =
         (s.followed_artists_index + step).min(s.followed_artists.len() - 1);
@@ -27,13 +27,13 @@ pub(super) async fn handle(
   }
   if keys.move_up.matches(&key) || keys.move_up_big.matches(&key) {
     let step = if keys.move_up_big.matches(&key) { 5 } else { 1 };
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.followed_artists_index = s.followed_artists_index.saturating_sub(step);
     return;
   }
   if keys.activate.matches(&key) {
     let info = {
-      let s = state.lock().unwrap();
+      let s = lock(state);
       s.followed_artists
         .get(s.followed_artists_index)
         .map(|a| (a.id.id().to_string(), a.name.clone()))
@@ -47,7 +47,7 @@ pub(super) async fn handle(
           artist_name,
         },
       );
-      state.lock().unwrap().push_block(ActiveBlock::ArtistView);
+      lock(state).push_block(ActiveBlock::ArtistView);
     }
   }
 }

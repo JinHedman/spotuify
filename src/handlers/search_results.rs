@@ -1,4 +1,4 @@
-use crate::app::{ActiveBlock, AppState, SearchTab};
+use crate::app::{lock, ActiveBlock, AppState, SearchTab};
 use crate::client::IoEvent;
 use crate::config::keys::KeyBindings;
 use crate::ui::search_results as results_helpers;
@@ -13,12 +13,12 @@ pub(super) async fn handle(
   keys: &KeyBindings,
 ) {
   if keys.search_tab_prev.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.search_tab = s.search_tab.prev();
     return;
   }
   if keys.search_tab_next.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.search_tab = s.search_tab.next();
     return;
   }
@@ -48,7 +48,7 @@ pub(super) async fn handle(
   }
   if keys.add_to_queue.matches(&key) {
     let uri = {
-      let s = state.lock().unwrap();
+      let s = lock(state);
       if s.search_tab == SearchTab::Tracks {
         results_helpers::selected_track_uri(&s)
       } else {
@@ -62,7 +62,7 @@ pub(super) async fn handle(
   }
   if keys.activate.matches(&key) {
     let ev = {
-      let s = state.lock().unwrap();
+      let s = lock(state);
       pick_event(&s)
     };
     match ev {
@@ -85,7 +85,7 @@ pub(super) async fn handle(
             album_name: name,
           },
         );
-        state.lock().unwrap().push_block(ActiveBlock::TrackTable);
+        lock(state).push_block(ActiveBlock::TrackTable);
       }
       Some(PickEvent::OpenArtist(id, name)) => {
         super::send_io(
@@ -96,7 +96,7 @@ pub(super) async fn handle(
             artist_name: name,
           },
         );
-        state.lock().unwrap().push_block(ActiveBlock::ArtistView);
+        lock(state).push_block(ActiveBlock::ArtistView);
       }
       None => {}
     }
@@ -144,7 +144,7 @@ fn set_selection(state: &Mutex<AppState>, to: i32) {
 }
 
 fn adjust(state: &Mutex<AppState>, f: impl Fn(i32, usize) -> i32) {
-  let mut s = state.lock().unwrap();
+  let mut s = lock(state);
   let max_len = match s.search_tab {
     SearchTab::Tracks => s.search_results.tracks.len(),
     SearchTab::Albums => s.search_results.albums.len(),

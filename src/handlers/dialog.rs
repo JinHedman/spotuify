@@ -1,4 +1,4 @@
-use crate::app::{AppState, DialogAction};
+use crate::app::{lock, AppState, DialogAction};
 use crate::client::IoEvent;
 use crate::config::keys::KeyBindings;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -16,7 +16,7 @@ pub(super) async fn handle(
     || keys.back.matches(&key)
     || matches!(key.code, KeyCode::Char('n') | KeyCode::Char('N'));
   if cancel {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.dialog = None;
     s.pop_block();
     return;
@@ -29,7 +29,7 @@ pub(super) async fn handle(
   );
   if confirm {
     let action = {
-      let mut s = state.lock().unwrap();
+      let mut s = lock(state);
       let action = s.dialog.take().map(|d| d.action);
       s.pop_block();
       action

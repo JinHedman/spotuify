@@ -16,7 +16,7 @@ use rspotify::model::{
   PlayableItem,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 /// A fixed sidebar entry: its glyph and its name.
@@ -262,6 +262,17 @@ impl Default for ArtistView {
       tab: ArtistTab::Tracks,
     }
   }
+}
+
+/// Lock the shared state from the UI path.
+///
+/// The network task can panic while holding the lock at any moment, so the
+/// main loop's poison check cannot cover a handler that is already running. A
+/// plain `unwrap()` there would panic the UI a second time and bury the
+/// network task's error; recovering lets the handler finish and the loop exit
+/// on its next poison check with the real cause.
+pub fn lock(state: &Mutex<AppState>) -> MutexGuard<'_, AppState> {
+  state.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 pub struct AppState {
