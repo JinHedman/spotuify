@@ -48,10 +48,19 @@ impl Failure {
   }
 }
 
-/// `Retry-After` as delta-seconds. Spotify sends integers; the HTTP-date form
-/// is not handled and falls back to the exponential delay.
+/// Longest `Retry-After` honoured. The header is untrusted input: an absurd
+/// value would overflow `Instant + Duration` and panic the network task.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60 * 60);
+
+/// `Retry-After` as delta-seconds, clamped to `MAX_RETRY_AFTER`. Spotify sends
+/// integers; the HTTP-date form is not handled and falls back to the
+/// exponential delay.
 pub fn parse_retry_after(value: &str) -> Option<Duration> {
-  value.trim().parse::<u64>().ok().map(Duration::from_secs)
+  value
+    .trim()
+    .parse::<u64>()
+    .ok()
+    .map(|secs| Duration::from_secs(secs).min(MAX_RETRY_AFTER))
 }
 
 /// Exponential delay for the `n`th consecutive failure (1-based), capped.
@@ -79,13 +88,39 @@ impl PollBackoff {
     *self = Self::default();
   }
 
-  /// Record a failure and suspend polling. Called for every failed poll, and
-  /// for a 429 on any request — the limit applies to the whole app. Returns
-  /// the notice to show, or `None` if the same text is still visible.
+  /// Record a failed poll and suspend polling. Returns the notice to show, or
+  /// `None` if the same text is still visible.
   ///
   /// `detail` is only used for `Failure::Other`, where there is no plain
   /// description to fall back on.
   pub fn on_failure(&mut self, failure: &Failure, detail: &str, now: Instant) -> Option<String> {
+    let secs = self.suspend(failure, now);
+    let text = match failure {
+      Failure::RateLimited { .. } => format!("Rate limited, retrying in {secs}s"),
+      Failure::Unreachable => format!("Can't reach Spotify, retrying in {secs}s"),
+      Failure::Other => format!("Playback update failed ({detail}), retrying in {secs}s"),
+    };
+    self.post(text, now)
+  }
+
+  /// Record a 429 on a user action (play, save, next…). The limit applies to
+  /// the whole app, so polling is suspended too. The action itself is not
+  /// retried, so the notice names it and says it failed — "retrying" would
+  /// promise something that never happens. Always returned: each failed
+  /// action is news to the user.
+  pub fn on_action_rate_limited(
+    &mut self,
+    action: &str,
+    failure: &Failure,
+    now: Instant,
+  ) -> String {
+    let secs = self.suspend(failure, now);
+    format!("{action} failed: rate limited, try again in {secs}s")
+  }
+
+  /// Push `resume_at` out for `failure` and return the remaining wait in
+  /// whole seconds, rounded up.
+  fn suspend(&mut self, failure: &Failure, now: Instant) -> u64 {
     self.consecutive_failures = self.consecutive_failures.saturating_add(1);
     let delay = match failure {
       // Honour Spotify's number as given; polling before it only extends the
@@ -101,13 +136,7 @@ impl PollBackoff {
     self.resume_at = Some(self.resume_at.map_or(until, |t| t.max(until)));
 
     let secs = self.resume_at.unwrap().saturating_duration_since(now);
-    let secs = secs.as_secs() + u64::from(secs.subsec_nanos() > 0);
-    let text = match failure {
-      Failure::RateLimited { .. } => format!("Rate limited, retrying in {secs}s"),
-      Failure::Unreachable => format!("Can't reach Spotify, retrying in {secs}s"),
-      Failure::Other => format!("Playback update failed ({detail}), retrying in {secs}s"),
-    };
-    self.post(text, now)
+    secs.as_secs() + u64::from(secs.subsec_nanos() > 0)
   }
 
   fn post(&mut self, text: String, now: Instant) -> Option<String> {
@@ -131,6 +160,43 @@ mod tests {
     assert_eq!(parse_retry_after(" 3 "), Some(Duration::from_secs(3)));
     assert_eq!(parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"), None);
     assert_eq!(parse_retry_after("-1"), None);
+  }
+
+  #[test]
+  fn retry_after_is_clamped_so_resume_time_cannot_overflow() {
+    assert_eq!(parse_retry_after("3600"), Some(MAX_RETRY_AFTER));
+    assert_eq!(parse_retry_after("3601"), Some(MAX_RETRY_AFTER));
+    assert_eq!(
+      parse_retry_after(&u64::MAX.to_string()),
+      Some(MAX_RETRY_AFTER)
+    );
+    // The value classify would produce must not panic when added to now.
+    let mut b = PollBackoff::default();
+    let limited = Failure::RateLimited {
+      retry_after: parse_retry_after(&u64::MAX.to_string()),
+    };
+    assert!(b.on_failure(&limited, "", Instant::now()).is_some());
+  }
+
+  #[test]
+  fn rate_limited_action_names_the_action_and_says_it_failed() {
+    let now = Instant::now();
+    let mut b = PollBackoff::default();
+    let limited = Failure::RateLimited {
+      retry_after: Some(Duration::from_secs(12)),
+    };
+    assert_eq!(
+      b.on_action_rate_limited("Next track", &limited, now),
+      "Next track failed: rate limited, try again in 12s"
+    );
+    // Polling is suspended as well; the limit is app-wide.
+    assert!(!b.allows_poll(now + Duration::from_secs(11)));
+    assert!(b.allows_poll(now + Duration::from_secs(12)));
+    // A second failed action is reported again, not deduped.
+    assert_eq!(
+      b.on_action_rate_limited("Next track", &limited, now),
+      "Next track failed: rate limited, try again in 12s"
+    );
   }
 
   #[test]

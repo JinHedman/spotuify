@@ -127,6 +127,21 @@ impl IoEvent {
   }
 }
 
+/// An `IoEvent::name()` in sentence case for the status line: "NextTrack"
+/// becomes "Next track".
+fn action_label(name: &str) -> String {
+  let mut out = String::new();
+  for (i, c) in name.chars().enumerate() {
+    if i > 0 && c.is_ascii_uppercase() {
+      out.push(' ');
+      out.push(c.to_ascii_lowercase());
+    } else {
+      out.push(c);
+    }
+  }
+  out
+}
+
 pub struct Network {
   spotify: AuthCodeSpotify,
   state: Arc<Mutex<AppState>>,
@@ -177,14 +192,19 @@ impl Network {
           let failure = Failure::classify(&err);
           // A failed poll always backs off. Other requests only do on a 429,
           // which applies to the whole app; their other failures are the
-          // user's to see and retry.
-          if is_poll || matches!(failure, Failure::RateLimited { .. }) {
+          // user's to see and retry. Either way a user action is not
+          // retried, so its notice says it failed rather than "retrying".
+          if is_poll {
             let detail = format!("{err:#}");
             if let Some(notice) = backoff.on_failure(&failure, &detail, Instant::now()) {
               self.set_error(notice);
             } else {
               self.set_loading(false);
             }
+          } else if matches!(failure, Failure::RateLimited { .. }) {
+            let notice =
+              backoff.on_action_rate_limited(&action_label(name), &failure, Instant::now());
+            self.set_error(notice);
           } else {
             self.set_error(format!("{name}: {err:#}"));
           }
@@ -1664,6 +1684,16 @@ async fn render_cover(url: &str, cols: u16, rows: u16) -> Result<CoverArt> {
 mod tests {
   use super::*;
   use std::io::Write;
+
+  #[test]
+  fn action_label_is_sentence_case() {
+    assert_eq!(action_label(IoEvent::NextTrack.name()), "Next track");
+    assert_eq!(action_label(IoEvent::Seek(0).name()), "Seek");
+    assert_eq!(
+      action_label(IoEvent::ToggleSaveTrack(String::new()).name()),
+      "Toggle save track"
+    );
+  }
 
   /// Writes a 48x48 PPM: top half pure red, bottom half pure blue.
   fn fixture(path: &std::path::Path) {
