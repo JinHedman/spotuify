@@ -125,21 +125,47 @@ impl IoEvent {
       IoEvent::Shutdown => "Shutdown",
     }
   }
-}
 
-/// An `IoEvent::name()` in sentence case for the status line: "NextTrack"
-/// becomes "Next track".
-fn action_label(name: &str) -> String {
-  let mut out = String::new();
-  for (i, c) in name.chars().enumerate() {
-    if i > 0 && c.is_ascii_uppercase() {
-      out.push(' ');
-      out.push(c.to_ascii_lowercase());
-    } else {
-      out.push(c);
+  /// What the user would call this, for status-line notices such as
+  /// "Next track failed: …". Spelled out per variant rather than derived from
+  /// `name()`, which yields identifiers like "Play track uris".
+  pub fn label(&self) -> &'static str {
+    match self {
+      IoEvent::GetCurrentPlayback => "Playback update",
+      IoEvent::GetPlaylists => "Load playlists",
+      IoEvent::RefreshPlaylistCover => "Load playlist cover",
+      IoEvent::GetPlaylistTracks { .. } => "Load playlist",
+      IoEvent::GetSavedTracks => "Load liked songs",
+      IoEvent::GetAlbumTracks { .. } => "Load album",
+      IoEvent::OpenArtist { .. } => "Load artist",
+      IoEvent::Search(_) => "Search",
+      IoEvent::GetDevices => "Load devices",
+      IoEvent::TransferPlayback(_) => "Switch device",
+      IoEvent::GetSavedAlbums => "Load albums",
+      IoEvent::GetFollowedArtists => "Load artists",
+      IoEvent::GetRecentlyPlayed => "Load recently played",
+      IoEvent::ToggleSaveTrack(_) => "Save track",
+      IoEvent::ToggleSaveAlbum(_) => "Save album",
+      IoEvent::ToggleFollowArtist(_) => "Follow artist",
+      IoEvent::ToggleShuffle => "Shuffle",
+      IoEvent::CycleRepeat => "Repeat",
+      IoEvent::UnfollowPlaylist(_) => "Remove playlist",
+      IoEvent::GetSavedShows => "Load podcasts",
+      IoEvent::GetShowEpisodes { .. } => "Load episodes",
+      IoEvent::GetQueue => "Load queue",
+      IoEvent::AddToQueue(_) => "Add to queue",
+      IoEvent::PlayUri(_) | IoEvent::PlayTrackInContext { .. } | IoEvent::PlayTrackUris { .. } => {
+        "Play"
+      }
+      IoEvent::PausePlayback => "Pause",
+      IoEvent::ResumePlayback => "Resume",
+      IoEvent::NextTrack => "Next track",
+      IoEvent::PreviousTrack => "Previous track",
+      IoEvent::ChangeVolume(_) => "Volume",
+      IoEvent::Seek(_) => "Seek",
+      IoEvent::Shutdown => "Shutdown",
     }
   }
-  out
 }
 
 pub struct Network {
@@ -175,6 +201,7 @@ impl Network {
         flag.release();
       }
       let name = event.name();
+      let label = event.label();
       let is_poll = matches!(event, IoEvent::GetCurrentPlayback);
       // Suspended polls are dropped, not deferred: the UI sends a fresh one
       // every tick, so the first tick after the window does the retry.
@@ -202,11 +229,10 @@ impl Network {
               self.set_loading(false);
             }
           } else if matches!(failure, Failure::RateLimited { .. }) {
-            let notice =
-              backoff.on_action_rate_limited(&action_label(name), &failure, Instant::now());
+            let notice = backoff.on_action_rate_limited(label, &failure, Instant::now());
             self.set_error(notice);
           } else {
-            self.set_error(format!("{name}: {err:#}"));
+            self.set_error(format!("{label} failed: {err:#}"));
           }
         }
       }
@@ -1686,12 +1712,24 @@ mod tests {
   use std::io::Write;
 
   #[test]
-  fn action_label_is_sentence_case() {
-    assert_eq!(action_label(IoEvent::NextTrack.name()), "Next track");
-    assert_eq!(action_label(IoEvent::Seek(0).name()), "Seek");
+  fn every_action_notice_uses_the_human_label() {
+    assert_eq!(IoEvent::NextTrack.label(), "Next track");
     assert_eq!(
-      action_label(IoEvent::ToggleSaveTrack(String::new()).name()),
-      "Toggle save track"
+      IoEvent::PlayTrackUris {
+        uris: vec![],
+        offset_index: 0
+      }
+      .label(),
+      "Play"
+    );
+    assert_eq!(IoEvent::PlayUri(String::new()).label(), "Play");
+    assert_eq!(
+      IoEvent::GetAlbumTracks {
+        album_id: String::new(),
+        album_name: String::new()
+      }
+      .label(),
+      "Load album"
     );
   }
 
