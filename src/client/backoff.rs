@@ -74,6 +74,10 @@ pub struct PollBackoff {
   consecutive_failures: u32,
   /// Polls are skipped until this instant.
   resume_at: Option<Instant>,
+  /// End of the current 429 window. User actions are refused locally until
+  /// then. Separate from `resume_at` because ordinary poll backoff (an
+  /// outage, a 500) is no reason to refuse a keypress.
+  rate_limited_until: Option<Instant>,
   /// Last notice posted and when, so an unchanged message is not re-posted
   /// while it is still on screen.
   last_notice: Option<(String, Instant)>,
@@ -82,6 +86,17 @@ pub struct PollBackoff {
 impl PollBackoff {
   pub fn allows_poll(&self, now: Instant) -> bool {
     self.resume_at.is_none_or(|t| now >= t)
+  }
+
+  /// The notice for a user action refused because a 429 window is still
+  /// open, or `None` when it may go ahead. Refusing does not count as a
+  /// failure: Spotify was never asked, so it must not lengthen the backoff.
+  pub fn reject_action(&self, action: &str, now: Instant) -> Option<String> {
+    let until = self.rate_limited_until.filter(|t| now < *t)?;
+    Some(action_rate_limited_notice(
+      action,
+      until.saturating_duration_since(now),
+    ))
   }
 
   pub fn on_success(&mut self) {
@@ -114,8 +129,11 @@ impl PollBackoff {
     failure: &Failure,
     now: Instant,
   ) -> String {
-    let secs = self.suspend(failure, now);
-    format!("{action} failed: rate limited, try again in {secs}s")
+    self.suspend(failure, now);
+    let wait = self
+      .rate_limited_until
+      .map_or(Duration::ZERO, |t| t.saturating_duration_since(now));
+    action_rate_limited_notice(action, wait)
   }
 
   /// Push `resume_at` out for `failure` and return the remaining wait in
@@ -134,9 +152,11 @@ impl PollBackoff {
     // Never shorten an existing suspension, e.g. a Retry-After from a user
     // action followed by a quicker ordinary failure.
     self.resume_at = Some(self.resume_at.map_or(until, |t| t.max(until)));
+    if matches!(failure, Failure::RateLimited { .. }) {
+      self.rate_limited_until = Some(self.rate_limited_until.map_or(until, |t| t.max(until)));
+    }
 
-    let secs = self.resume_at.unwrap().saturating_duration_since(now);
-    secs.as_secs() + u64::from(secs.subsec_nanos() > 0)
+    ceil_secs(self.resume_at.unwrap().saturating_duration_since(now))
   }
 
   fn post(&mut self, text: String, now: Instant) -> Option<String> {
@@ -148,6 +168,29 @@ impl PollBackoff {
     self.last_notice = Some((text.clone(), now));
     Some(text)
   }
+}
+
+fn action_rate_limited_notice(action: &str, wait: Duration) -> String {
+  let secs = ceil_secs(wait);
+  format!("{action} failed: rate limited, try again in {secs}s")
+}
+
+/// Whole seconds, rounded up, so "try again in 0s" never appears mid-window.
+fn ceil_secs(d: Duration) -> u64 {
+  d.as_secs() + u64::from(d.subsec_nanos() > 0)
+}
+
+/// A rspotify HTTP error with `status`, wrapped in context the way handlers
+/// do, to prove `classify` walks the chain.
+#[cfg(test)]
+pub(crate) fn status_error(status: u16, retry_after: Option<&str>) -> anyhow::Error {
+  let mut builder = http::Response::builder().status(status);
+  if let Some(v) = retry_after {
+    builder = builder.header("Retry-After", v);
+  }
+  let resp = builder.body("").unwrap();
+  let err = ClientError::from(HttpError::StatusCode(resp.into()));
+  anyhow::Error::new(err).context("current_playback")
 }
 
 #[cfg(test)]
@@ -197,6 +240,33 @@ mod tests {
       b.on_action_rate_limited("Next track", &limited, now),
       "Next track failed: rate limited, try again in 12s"
     );
+  }
+
+  #[test]
+  fn actions_are_refused_only_inside_a_rate_limit_window() {
+    let now = Instant::now();
+    let mut b = PollBackoff::default();
+    assert_eq!(b.reject_action("Play", now), None);
+
+    // Ordinary poll backoff does not block user actions.
+    b.on_failure(&Failure::Unreachable, "", now);
+    assert_eq!(b.reject_action("Play", now), None);
+
+    let limited = Failure::RateLimited {
+      retry_after: Some(Duration::from_secs(12)),
+    };
+    b.on_failure(&limited, "", now);
+    let failures = b.consecutive_failures;
+    assert_eq!(
+      b.reject_action("Play", now + Duration::from_millis(2500))
+        .as_deref(),
+      Some("Play failed: rate limited, try again in 10s")
+    );
+    assert_eq!(
+      b.consecutive_failures, failures,
+      "a refusal is not a failure"
+    );
+    assert_eq!(b.reject_action("Play", now + Duration::from_secs(12)), None);
   }
 
   #[test]
@@ -300,17 +370,6 @@ mod tests {
       b.on_failure(&limited, "", later).is_some(),
       "re-posted once the old one has expired"
     );
-  }
-
-  fn status_error(status: u16, retry_after: Option<&str>) -> anyhow::Error {
-    let mut builder = http::Response::builder().status(status);
-    if let Some(v) = retry_after {
-      builder = builder.header("Retry-After", v);
-    }
-    let resp = builder.body("").unwrap();
-    let err = ClientError::from(HttpError::StatusCode(resp.into()));
-    // Wrapped in context the way handlers do, to prove the chain is walked.
-    anyhow::Error::new(err).context("current_playback")
   }
 
   #[test]

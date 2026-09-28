@@ -168,6 +168,74 @@ impl IoEvent {
   }
 }
 
+/// What `run` should show after one event.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+  /// Nothing to report.
+  Done,
+  /// Put this on the status line.
+  Notice(String),
+  /// A poll failed but its notice is still on screen; only clear the loading
+  /// flag.
+  Quiet,
+}
+
+/// One event's trip through the backoff: gate it, run it via `dispatch`,
+/// and turn a failure into a notice. Split out of `run` so the routing can be
+/// tested without Spotify.
+async fn process<F, Fut>(backoff: &mut PollBackoff, event: IoEvent, dispatch: F) -> Step
+where
+  F: FnOnce(IoEvent) -> Fut,
+  Fut: std::future::Future<Output = Result<()>>,
+{
+  let name = event.name();
+  let label = event.label();
+  let is_poll = matches!(event, IoEvent::GetCurrentPlayback);
+  // The cover render reads a CDN URL we already have; it never calls the Web
+  // API, so a rate limit is no reason to hold it back.
+  let calls_api = !matches!(event, IoEvent::RefreshPlaylistCover);
+  let now = Instant::now();
+  if is_poll {
+    // Suspended polls are dropped, not deferred: the UI sends a fresh one
+    // every tick, so the first tick after the window does the retry.
+    if !backoff.allows_poll(now) {
+      return Step::Done;
+    }
+  } else if calls_api {
+    // Hitting Spotify inside a 429 window only extends it.
+    if let Some(notice) = backoff.reject_action(label, now) {
+      return Step::Notice(notice);
+    }
+  }
+  let err = match dispatch(event).await {
+    Ok(()) => {
+      if is_poll {
+        backoff.on_success();
+      }
+      return Step::Done;
+    }
+    Err(err) => err,
+  };
+  warn!(%name, ?err, "network event failed");
+  let failure = Failure::classify(&err);
+  let now = Instant::now();
+  // A failed poll always backs off. Other requests only do on a 429, which
+  // applies to the whole app; their other failures are the user's to see and
+  // retry. Either way a user action is not retried, so its notice says it
+  // failed rather than "retrying".
+  if is_poll {
+    let detail = format!("{err:#}");
+    match backoff.on_failure(&failure, &detail, now) {
+      Some(notice) => Step::Notice(notice),
+      None => Step::Quiet,
+    }
+  } else if matches!(failure, Failure::RateLimited { .. }) {
+    Step::Notice(backoff.on_action_rate_limited(label, &failure, now))
+  } else {
+    Step::Notice(format!("{label} failed: {err:#}"))
+  }
+}
+
 pub struct Network {
   spotify: AuthCodeSpotify,
   state: Arc<Mutex<AppState>>,
@@ -200,41 +268,10 @@ impl Network {
       if let Some(flag) = self.pending.flag_for(&event) {
         flag.release();
       }
-      let name = event.name();
-      let label = event.label();
-      let is_poll = matches!(event, IoEvent::GetCurrentPlayback);
-      // Suspended polls are dropped, not deferred: the UI sends a fresh one
-      // every tick, so the first tick after the window does the retry.
-      if is_poll && !backoff.allows_poll(Instant::now()) {
-        continue;
-      }
-      match self.dispatch(event).await {
-        Ok(()) => {
-          if is_poll {
-            backoff.on_success();
-          }
-        }
-        Err(err) => {
-          warn!(%name, ?err, "network event failed");
-          let failure = Failure::classify(&err);
-          // A failed poll always backs off. Other requests only do on a 429,
-          // which applies to the whole app; their other failures are the
-          // user's to see and retry. Either way a user action is not
-          // retried, so its notice says it failed rather than "retrying".
-          if is_poll {
-            let detail = format!("{err:#}");
-            if let Some(notice) = backoff.on_failure(&failure, &detail, Instant::now()) {
-              self.set_error(notice);
-            } else {
-              self.set_loading(false);
-            }
-          } else if matches!(failure, Failure::RateLimited { .. }) {
-            let notice = backoff.on_action_rate_limited(label, &failure, Instant::now());
-            self.set_error(notice);
-          } else {
-            self.set_error(format!("{label} failed: {err:#}"));
-          }
-        }
+      match process(&mut backoff, event, |e| self.dispatch(e)).await {
+        Step::Done => {}
+        Step::Notice(notice) => self.set_error(notice),
+        Step::Quiet => self.set_loading(false),
       }
     }
   }
@@ -1027,6 +1064,11 @@ impl Network {
           }
           Ok(_) => true,
           Err(err) => {
+            // A 429 ends the search: the remaining pages and types would only
+            // extend the limit. Returned so `run` opens the rate-limit window.
+            if matches!(Failure::classify(&err), Failure::RateLimited { .. }) {
+              return Err(err);
+            }
             warn!(?err, r#type = ?t, offset, "search sub-query failed — skipping");
             // Only surface first-page errors — later pages failing is usually
             // "end of results" and not worth blaring at the user.
@@ -1730,6 +1772,97 @@ mod tests {
       }
       .label(),
       "Load album"
+    );
+  }
+
+  /// Runs `event` through `process` with a fake dispatch that returns
+  /// `result` and counts how often Spotify would have been called.
+  async fn step(
+    backoff: &mut PollBackoff,
+    event: IoEvent,
+    result: fn() -> Result<()>,
+    calls: &std::cell::Cell<u32>,
+  ) -> Step {
+    process(backoff, event, |_| async move {
+      calls.set(calls.get() + 1);
+      result()
+    })
+    .await
+  }
+
+  fn limited() -> Result<()> {
+    Err(backoff::status_error(429, Some("30")))
+  }
+
+  fn ok() -> Result<()> {
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn poll_429_suspends_polling_with_the_poll_notice() {
+    let mut b = PollBackoff::default();
+    let calls = std::cell::Cell::new(0);
+    let got = step(&mut b, IoEvent::GetCurrentPlayback, limited, &calls).await;
+    assert_eq!(got, Step::Notice("Rate limited, retrying in 30s".into()));
+    assert!(!b.allows_poll(Instant::now()));
+
+    // The next poll is skipped without calling Spotify.
+    let got = step(&mut b, IoEvent::GetCurrentPlayback, ok, &calls).await;
+    assert_eq!(got, Step::Done);
+    assert_eq!(calls.get(), 1);
+  }
+
+  #[tokio::test]
+  async fn action_429_names_the_action_and_suspends_polling() {
+    let mut b = PollBackoff::default();
+    let calls = std::cell::Cell::new(0);
+    let got = step(&mut b, IoEvent::NextTrack, limited, &calls).await;
+    assert_eq!(
+      got,
+      Step::Notice("Next track failed: rate limited, try again in 30s".into())
+    );
+    assert!(!b.allows_poll(Instant::now()));
+  }
+
+  #[tokio::test]
+  async fn action_inside_a_rate_limit_window_never_reaches_spotify() {
+    let mut b = PollBackoff::default();
+    let calls = std::cell::Cell::new(0);
+    step(&mut b, IoEvent::GetCurrentPlayback, limited, &calls).await;
+    assert_eq!(calls.get(), 1);
+
+    let got = step(&mut b, IoEvent::Search("abba".into()), ok, &calls).await;
+    assert_eq!(
+      got,
+      Step::Notice("Search failed: rate limited, try again in 30s".into())
+    );
+    assert_eq!(calls.get(), 1, "refused locally");
+
+    // The cover render does not use the Web API, so it still runs.
+    let got = step(&mut b, IoEvent::RefreshPlaylistCover, ok, &calls).await;
+    assert_eq!(got, Step::Done);
+    assert_eq!(calls.get(), 2);
+  }
+
+  #[tokio::test]
+  async fn other_action_failures_use_the_label_and_do_not_suspend() {
+    let mut b = PollBackoff::default();
+    let calls = std::cell::Cell::new(0);
+    let got = step(
+      &mut b,
+      IoEvent::PlayUri(String::new()),
+      || Err(backoff::status_error(500, None)),
+      &calls,
+    )
+    .await;
+    let Step::Notice(notice) = got else {
+      panic!("expected a notice, got {got:?}");
+    };
+    assert!(notice.starts_with("Play failed: "), "{notice}");
+    assert!(b.allows_poll(Instant::now()));
+    assert_eq!(
+      step(&mut b, IoEvent::NextTrack, ok, &calls).await,
+      Step::Done
     );
   }
 
