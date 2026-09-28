@@ -23,6 +23,16 @@ spotuify controls playback through the Spotify Web API. It does not play audio i
 
 ## Install
 
+Prebuilt binaries for macOS and Linux are on the [Releases](https://github.com/JinHedman/spotuify/releases) page.
+
+With Cargo (installs `spot` to `~/.cargo/bin`):
+
+```bash
+cargo install --git https://github.com/JinHedman/spotuify
+```
+
+From source:
+
 ```bash
 git clone https://github.com/JinHedman/spotuify
 cd spotuify
