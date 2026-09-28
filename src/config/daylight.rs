@@ -149,7 +149,7 @@ pub const DAY_CYCLE: &[DayAnchor] = &[
 impl DayAnchor {
   pub fn theme(&self) -> Theme {
     let wrapper: super::presets::ThemeWrapper =
-      serde_yaml::from_str(self.raw).expect("bundled day palette must parse");
+      serde_norway::from_str(self.raw).expect("bundled day palette must parse");
     Theme::from(&wrapper.theme)
   }
 }

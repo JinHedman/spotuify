@@ -1,4 +1,4 @@
-use crate::app::{ActiveBlock, AppState, SearchTab};
+use crate::app::{lock, ActiveBlock, AppState, SearchTab};
 use crate::client::IoEvent;
 use crate::config::keys::KeyBindings;
 use crate::ui::search_results as results_helpers;
@@ -13,12 +13,12 @@ pub(super) async fn handle(
   keys: &KeyBindings,
 ) {
   if keys.search_tab_prev.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.search_tab = s.search_tab.prev();
     return;
   }
   if keys.search_tab_next.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.search_tab = s.search_tab.next();
     return;
   }
@@ -48,7 +48,7 @@ pub(super) async fn handle(
   }
   if keys.add_to_queue.matches(&key) {
     let uri = {
-      let s = state.lock().unwrap();
+      let s = lock(state);
       if s.search_tab == SearchTab::Tracks {
         results_helpers::selected_track_uri(&s)
       } else {
@@ -56,41 +56,51 @@ pub(super) async fn handle(
       }
     };
     if let Some(uri) = uri {
-      let _ = io_tx.send(IoEvent::AddToQueue(uri)).await;
+      super::send_io(state, io_tx, IoEvent::AddToQueue(uri));
     }
     return;
   }
   if keys.activate.matches(&key) {
     let ev = {
-      let s = state.lock().unwrap();
+      let s = lock(state);
       pick_event(&s)
     };
     match ev {
       Some(PickEvent::PlaySingleTrack(_uri, uris, idx)) => {
-        let _ = io_tx
-          .send(IoEvent::PlayTrackUris {
+        super::send_io(
+          state,
+          io_tx,
+          IoEvent::PlayTrackUris {
             uris,
             offset_index: idx,
-          })
-          .await;
+          },
+        );
       }
       Some(PickEvent::OpenAlbum(id, name)) => {
-        let _ = io_tx
-          .send(IoEvent::GetAlbumTracks {
+        let sent = super::send_io(
+          state,
+          io_tx,
+          IoEvent::GetAlbumTracks {
             album_id: id,
             album_name: name,
-          })
-          .await;
-        state.lock().unwrap().push_block(ActiveBlock::TrackTable);
+          },
+        );
+        if sent {
+          lock(state).push_block(ActiveBlock::TrackTable);
+        }
       }
       Some(PickEvent::OpenArtist(id, name)) => {
-        let _ = io_tx
-          .send(IoEvent::OpenArtist {
+        let sent = super::send_io(
+          state,
+          io_tx,
+          IoEvent::OpenArtist {
             artist_id: id,
             artist_name: name,
-          })
-          .await;
-        state.lock().unwrap().push_block(ActiveBlock::ArtistView);
+          },
+        );
+        if sent {
+          lock(state).push_block(ActiveBlock::ArtistView);
+        }
       }
       None => {}
     }
@@ -138,7 +148,7 @@ fn set_selection(state: &Mutex<AppState>, to: i32) {
 }
 
 fn adjust(state: &Mutex<AppState>, f: impl Fn(i32, usize) -> i32) {
-  let mut s = state.lock().unwrap();
+  let mut s = lock(state);
   let max_len = match s.search_tab {
     SearchTab::Tracks => s.search_results.tracks.len(),
     SearchTab::Albums => s.search_results.albums.len(),

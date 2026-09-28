@@ -23,14 +23,24 @@ spotuify controls playback through the Spotify Web API. It does not play audio i
 
 ## Install
 
+Prebuilt binaries for macOS and Linux are on the [Releases](https://github.com/JinHedman/spotuify/releases) page. Linux binaries need glibc 2.28+ (Ubuntu 20.04, Debian 10, RHEL 8 or newer).
+
+macOS binaries aren't notarized; if Gatekeeper blocks one, run `xattr -d com.apple.quarantine spot`.
+
+With Cargo (installs `spot` to `~/.cargo/bin`):
+
+```bash
+cargo install --git https://github.com/JinHedman/spotuify
+```
+
+From source:
+
 ```bash
 git clone https://github.com/JinHedman/spotuify
 cd spotuify
 cargo build --release
 ./target/release/spot
 ```
-
-On Linux you also need `libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libssl-dev pkg-config`.
 
 ## First run
 

@@ -3,8 +3,8 @@
 //! A three-bar equalizer, animated while playback is running and frozen flat
 //! when it is paused. The motion is honest: it reflects that playback is
 //! progressing, not any analysis of the audio — spotuify never sees the audio
-//! stream. That is the distinction between this and the fake visualisers ruled
-//! out in `IDEAS.md`.
+//! stream. That is the distinction between this and a fake audio visualiser,
+//! which spotuify deliberately does not have.
 
 /// Characters the glyph occupies. Matches the 3-wide content of the track
 /// table's `#` column, so the marker replaces the row number rather than

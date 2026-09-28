@@ -55,7 +55,11 @@ const COVER_HEIGHT: u16 = COVER_ROWS + 2;
 
 pub fn draw(frame: &mut Frame, state: &Arc<Mutex<AppState>>) {
   let area = frame.area();
-  let mut state = state.lock().unwrap();
+  // Recover a poisoned lock: the main loop exits on poison right after this
+  // frame, and a second panic here would only bury the first one.
+  let mut state = state
+    .lock()
+    .unwrap_or_else(std::sync::PoisonError::into_inner);
   // Recompute the theme source, then advance any in-flight fade, so this
   // frame paints the current blend. In DecadeAuto this is what notices a
   // track change and starts the next fade — no notification path needed.

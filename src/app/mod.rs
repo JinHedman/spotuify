@@ -2,6 +2,7 @@ pub mod route;
 
 pub use route::{ActiveBlock, ArtistTab, SearchTab};
 
+use crate::client::pending::PendingIo;
 use crate::config::theme::Theme;
 use crate::config::user::UserConfig;
 use rspotify::model::{
@@ -15,7 +16,7 @@ use rspotify::model::{
   PlayableItem,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 /// A fixed sidebar entry: its glyph and its name.
@@ -263,6 +264,17 @@ impl Default for ArtistView {
   }
 }
 
+/// Lock the shared state from the UI path.
+///
+/// The network task can panic while holding the lock at any moment, so the
+/// main loop's poison check cannot cover a handler that is already running. A
+/// plain `unwrap()` there would panic the UI a second time and bury the
+/// network task's error; recovering lets the handler finish and the loop exit
+/// on its next poison check with the real cause.
+pub fn lock(state: &Mutex<AppState>) -> MutexGuard<'_, AppState> {
+  state.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 pub struct AppState {
   pub config: Arc<UserConfig>,
 
@@ -295,6 +307,12 @@ pub struct AppState {
   /// on its own rather than relying on some later success to clear it.
   pub last_error: Option<Notice>,
   pub is_loading: bool,
+  /// Dedupe flags for coalesced `IoEvent`s, shared with the network task.
+  /// Lives here so any handler can reach it without a new parameter.
+  pub pending_io: Arc<PendingIo>,
+  /// When the "action dropped" notice was last posted, so holding a key
+  /// during a stall shows it once rather than on every repeat.
+  pub dropped_notice_at: Option<Instant>,
 
   pub active_block: ActiveBlock,
   pub block_history: Vec<ActiveBlock>,
@@ -401,6 +419,8 @@ impl AppState {
       playback_received_at: None,
       last_error: None,
       is_loading: false,
+      pending_io: Arc::new(PendingIo::default()),
+      dropped_notice_at: None,
       active_block: ActiveBlock::Library,
       block_history: Vec::new(),
       library_index: 0,
@@ -707,6 +727,21 @@ impl AppState {
       at: Instant::now(),
     });
   }
+
+  /// Report that a user action was dropped because the network channel was
+  /// full. Posted at most once per `NOTICE_TTL`.
+  pub fn note_dropped_action(&mut self) {
+    if self
+      .dropped_notice_at
+      .is_some_and(|at| at.elapsed() < Self::NOTICE_TTL)
+    {
+      return;
+    }
+    self.dropped_notice_at = Some(Instant::now());
+    self.set_notice(Self::DROPPED_NOTICE);
+  }
+
+  pub const DROPPED_NOTICE: &'static str = "Spotify is slow to respond, action dropped";
 
   /// The current message, if one is set and still within its lifetime.
   ///

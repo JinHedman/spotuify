@@ -262,7 +262,7 @@ pub const PRESETS: &[Preset] = &[
 ];
 
 fn parse(raw: &str) -> Theme {
-  let wrapper: ThemeWrapper = serde_yaml::from_str(raw).expect("bundled preset theme must parse");
+  let wrapper: ThemeWrapper = serde_norway::from_str(raw).expect("bundled preset theme must parse");
   Theme::from(&wrapper.theme)
 }
 

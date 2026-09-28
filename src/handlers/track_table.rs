@@ -1,4 +1,4 @@
-use crate::app::AppState;
+use crate::app::{lock, AppState};
 use crate::client::IoEvent;
 use crate::config::keys::KeyBindings;
 use crossterm::event::KeyEvent;
@@ -17,7 +17,7 @@ pub(super) async fn handle(
     } else {
       1
     };
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     if !s.track_list.is_empty() {
       s.track_list_index = (s.track_list_index + step).min(s.track_list.len() - 1);
     }
@@ -25,16 +25,16 @@ pub(super) async fn handle(
   }
   if keys.move_up.matches(&key) || keys.move_up_big.matches(&key) {
     let step = if keys.move_up_big.matches(&key) { 5 } else { 1 };
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.track_list_index = s.track_list_index.saturating_sub(step);
     return;
   }
   if keys.move_top.matches(&key) {
-    state.lock().unwrap().track_list_index = 0;
+    lock(state).track_list_index = 0;
     return;
   }
   if keys.move_bottom.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     if !s.track_list.is_empty() {
       s.track_list_index = s.track_list.len() - 1;
     }
@@ -42,19 +42,19 @@ pub(super) async fn handle(
   }
   if keys.add_to_queue.matches(&key) {
     let uri = {
-      let s = state.lock().unwrap();
+      let s = lock(state);
       s.track_list
         .get(s.track_list_index)
         .and_then(|t| t.uri.clone())
     };
     if let Some(uri) = uri {
-      let _ = io_tx.send(IoEvent::AddToQueue(uri)).await;
+      super::send_io(state, io_tx, IoEvent::AddToQueue(uri));
     }
     return;
   }
   if keys.activate.matches(&key) {
     let play = {
-      let s = state.lock().unwrap();
+      let s = lock(state);
       let idx = s.track_list_index;
       if s.track_list.is_empty() {
         None
@@ -74,7 +74,7 @@ pub(super) async fn handle(
       }
     };
     if let Some(ev) = play {
-      let _ = io_tx.send(ev).await;
+      super::send_io(state, io_tx, ev);
     }
   }
 }

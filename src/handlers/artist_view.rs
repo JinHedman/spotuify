@@ -1,4 +1,4 @@
-use crate::app::{ActiveBlock, AppState, ArtistTab};
+use crate::app::{lock, ActiveBlock, AppState, ArtistTab};
 use crate::client::IoEvent;
 use crate::config::keys::KeyBindings;
 use crossterm::event::KeyEvent;
@@ -13,12 +13,12 @@ pub(super) async fn handle(
   keys: &KeyBindings,
 ) {
   if keys.search_tab_prev.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.artist_view.tab = s.artist_view.tab.prev();
     return;
   }
   if keys.search_tab_next.matches(&key) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     s.artist_view.tab = s.artist_view.tab.next();
     return;
   }
@@ -48,7 +48,7 @@ pub(super) async fn handle(
   }
   if keys.add_to_queue.matches(&key) {
     let uri = {
-      let s = state.lock().unwrap();
+      let s = lock(state);
       if matches!(s.artist_view.tab, ArtistTab::Tracks) {
         s.artist_view
           .tracks
@@ -59,13 +59,13 @@ pub(super) async fn handle(
       }
     };
     if let Some(uri) = uri {
-      let _ = io_tx.send(IoEvent::AddToQueue(uri)).await;
+      super::send_io(state, io_tx, IoEvent::AddToQueue(uri));
     }
     return;
   }
   if keys.activate.matches(&key) {
     let action = {
-      let s = state.lock().unwrap();
+      let s = lock(state);
       match s.artist_view.tab {
         ArtistTab::Tracks => {
           let uris: Vec<String> = s
@@ -94,21 +94,27 @@ pub(super) async fn handle(
     };
     match action {
       Some(Action::Play(uris, idx)) => {
-        let _ = io_tx
-          .send(IoEvent::PlayTrackUris {
+        super::send_io(
+          state,
+          io_tx,
+          IoEvent::PlayTrackUris {
             uris,
             offset_index: idx,
-          })
-          .await;
+          },
+        );
       }
       Some(Action::OpenAlbum(id, name)) => {
-        let _ = io_tx
-          .send(IoEvent::GetAlbumTracks {
+        let sent = super::send_io(
+          state,
+          io_tx,
+          IoEvent::GetAlbumTracks {
             album_id: id,
             album_name: name,
-          })
-          .await;
-        state.lock().unwrap().push_block(ActiveBlock::TrackTable);
+          },
+        );
+        if sent {
+          lock(state).push_block(ActiveBlock::TrackTable);
+        }
       }
       None => {}
     }
@@ -121,7 +127,7 @@ enum Action {
 }
 
 fn move_selection(state: &Mutex<AppState>, delta: i32) {
-  let mut s = state.lock().unwrap();
+  let mut s = lock(state);
   let (idx, max_len) = match s.artist_view.tab {
     ArtistTab::Tracks => (s.artist_view.tracks_index, s.artist_view.tracks.len()),
     ArtistTab::Albums => (s.artist_view.albums_index, s.artist_view.albums.len()),
@@ -137,7 +143,7 @@ fn move_selection(state: &Mutex<AppState>, delta: i32) {
 }
 
 fn set_index(state: &Mutex<AppState>, target: usize) {
-  let mut s = state.lock().unwrap();
+  let mut s = lock(state);
   match s.artist_view.tab {
     ArtistTab::Tracks => {
       let max = s.artist_view.tracks.len().saturating_sub(1);
