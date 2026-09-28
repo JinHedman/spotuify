@@ -30,7 +30,7 @@ cargo build --release
 ./target/release/spot
 ```
 
-On Linux you also need `libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libssl-dev pkg-config`.
+On Linux you also need `libssl-dev pkg-config`.
 
 ## First run
 
