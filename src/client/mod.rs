@@ -16,6 +16,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::warn;
 
+pub mod pending;
+
 #[derive(Debug, Clone)]
 pub enum IoEvent {
   GetCurrentPlayback,
@@ -84,11 +86,17 @@ pub enum IoEvent {
 pub struct Network {
   spotify: AuthCodeSpotify,
   state: Arc<Mutex<AppState>>,
+  pending: Arc<pending::PendingIo>,
 }
 
 impl Network {
   pub fn new(spotify: AuthCodeSpotify, state: Arc<Mutex<AppState>>) -> Self {
-    Self { spotify, state }
+    let pending = Arc::clone(&state.lock().unwrap().pending_io);
+    Self {
+      spotify,
+      state,
+      pending,
+    }
   }
 
   pub async fn run(self, mut rx: mpsc::Receiver<IoEvent>) {
@@ -100,6 +108,11 @@ impl Network {
       // after the terminal had already been restored.
       if matches!(event, IoEvent::Shutdown) {
         break;
+      }
+      // Released on dequeue, before the work: anything that changes while it
+      // runs (the cursor, the playing track) must be able to queue a fresh one.
+      if let Some(flag) = self.pending.flag_for(&event) {
+        flag.release();
       }
       let name = format!("{event:?}");
       if let Err(err) = self.dispatch(event).await {

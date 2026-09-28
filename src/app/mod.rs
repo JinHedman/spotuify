@@ -2,6 +2,7 @@ pub mod route;
 
 pub use route::{ActiveBlock, ArtistTab, SearchTab};
 
+use crate::client::pending::PendingIo;
 use crate::config::theme::Theme;
 use crate::config::user::UserConfig;
 use rspotify::model::{
@@ -295,6 +296,9 @@ pub struct AppState {
   /// on its own rather than relying on some later success to clear it.
   pub last_error: Option<Notice>,
   pub is_loading: bool,
+  /// Dedupe flags for coalesced `IoEvent`s, shared with the network task.
+  /// Lives here so any handler can reach it without a new parameter.
+  pub pending_io: Arc<PendingIo>,
 
   pub active_block: ActiveBlock,
   pub block_history: Vec<ActiveBlock>,
@@ -401,6 +405,7 @@ impl AppState {
       playback_received_at: None,
       last_error: None,
       is_loading: false,
+      pending_io: Arc::new(PendingIo::default()),
       active_block: ActiveBlock::Library,
       block_history: Vec::new(),
       library_index: 0,

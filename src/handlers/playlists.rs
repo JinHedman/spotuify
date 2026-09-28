@@ -24,7 +24,7 @@ pub(super) async fn handle(
         s.playlists_index = (s.playlists_index + step).min(s.playlists.len() - 1);
       }
     }
-    let _ = io_tx.send(IoEvent::RefreshPlaylistCover).await;
+    send_cover_refresh(state, io_tx);
     return;
   }
   if keys.move_up.matches(&key) || keys.move_up_big.matches(&key) {
@@ -33,7 +33,7 @@ pub(super) async fn handle(
       let mut s = state.lock().unwrap();
       s.playlists_index = s.playlists_index.saturating_sub(step);
     }
-    let _ = io_tx.send(IoEvent::RefreshPlaylistCover).await;
+    send_cover_refresh(state, io_tx);
     return;
   }
   if keys.delete_playlist.matches(&key) {
@@ -66,4 +66,11 @@ pub(super) async fn handle(
       state.lock().unwrap().active_block = ActiveBlock::TrackTable;
     }
   }
+}
+
+/// Coalesced and non-blocking: holding j/k while the network task is stuck
+/// would otherwise fill the channel and freeze the UI on the next send.
+fn send_cover_refresh(state: &Mutex<AppState>, io_tx: &mpsc::Sender<IoEvent>) {
+  let pending = state.lock().unwrap().pending_io.clone();
+  pending.send(io_tx, IoEvent::RefreshPlaylistCover);
 }

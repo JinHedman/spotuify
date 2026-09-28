@@ -146,7 +146,8 @@ async fn run(
   io_tx: mpsc::Sender<IoEvent>,
   user_cfg: Arc<UserConfig>,
 ) -> Result<()> {
-  let _ = io_tx.send(IoEvent::GetCurrentPlayback).await;
+  let pending = state.lock().unwrap().pending_io.clone();
+  pending.send(&io_tx, IoEvent::GetCurrentPlayback);
   let _ = io_tx.send(IoEvent::GetPlaylists).await;
 
   let mut events = EventStream::new();
@@ -169,7 +170,11 @@ async fn run(
     tokio::select! {
       _ = time::sleep(redraw_in) => {}
       _ = poll.tick() => {
-        let _ = io_tx.send(IoEvent::GetCurrentPlayback).await;
+        // Never awaits: if the network task is stalled the channel fills, and
+        // an awaiting send here would stop redraws and key handling with it.
+        // At most one poll is queued; later ticks are dropped until it is
+        // dequeued.
+        pending.send(&io_tx, IoEvent::GetCurrentPlayback);
       }
       maybe_evt = events.next() => {
         let Some(evt) = maybe_evt else { return Ok(()) };

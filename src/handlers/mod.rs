@@ -182,7 +182,8 @@ pub async fn handle_key(
     return KeyOutcome::Continue;
   }
   if keys.refresh.matches(&key) {
-    let _ = io_tx.send(IoEvent::GetCurrentPlayback).await;
+    let pending = state.lock().unwrap().pending_io.clone();
+    pending.send(io_tx, IoEvent::GetCurrentPlayback);
     return KeyOutcome::Continue;
   }
   if keys.save_track.matches(&key) {
