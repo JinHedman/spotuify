@@ -19,24 +19,18 @@ jobs:
       matrix:
         include:
           # Every target builds on a native runner, so there is no
-          # cross-compiling and no cross-built OpenSSL to deal with.
+          # cross-compiling. Linux builds on 22.04 so the binaries only
+          # need glibc 2.35+; TLS is rustls, so there is no OpenSSL.
           - target: aarch64-apple-darwin
             os: macos-14
           - target: x86_64-apple-darwin
             os: macos-15-intel
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
+            os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
+            os: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v7
-
-      # macOS uses Security.framework via native-tls; only Linux needs OpenSSL.
-      - name: Install system deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
         with:
