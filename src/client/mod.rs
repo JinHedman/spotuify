@@ -3,6 +3,7 @@ use crate::app::{
   NOWPLAYING_ROWS,
 };
 use anyhow::{Context, Result};
+use backoff::{Failure, PollBackoff};
 use rspotify::model::playlist::SimplifiedPlaylist;
 use rspotify::model::{
   AdditionalType, AlbumId, AlbumType, ArtistId, EpisodeId, LibraryId, Market, Offset,
@@ -12,10 +13,11 @@ use rspotify::model::{
 use rspotify::{prelude::*, AuthCodeSpotify};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::warn;
 
+pub mod backoff;
 pub mod pending;
 
 #[derive(Debug, Clone)]
@@ -83,6 +85,48 @@ pub enum IoEvent {
   Shutdown,
 }
 
+impl IoEvent {
+  /// Variant name for logs and notices. `{:?}` would dump payloads such as
+  /// whole URI lists onto the status line.
+  pub fn name(&self) -> &'static str {
+    match self {
+      IoEvent::GetCurrentPlayback => "GetCurrentPlayback",
+      IoEvent::GetPlaylists => "GetPlaylists",
+      IoEvent::RefreshPlaylistCover => "RefreshPlaylistCover",
+      IoEvent::GetPlaylistTracks { .. } => "GetPlaylistTracks",
+      IoEvent::GetSavedTracks => "GetSavedTracks",
+      IoEvent::GetAlbumTracks { .. } => "GetAlbumTracks",
+      IoEvent::OpenArtist { .. } => "OpenArtist",
+      IoEvent::Search(_) => "Search",
+      IoEvent::GetDevices => "GetDevices",
+      IoEvent::TransferPlayback(_) => "TransferPlayback",
+      IoEvent::GetSavedAlbums => "GetSavedAlbums",
+      IoEvent::GetFollowedArtists => "GetFollowedArtists",
+      IoEvent::GetRecentlyPlayed => "GetRecentlyPlayed",
+      IoEvent::ToggleSaveTrack(_) => "ToggleSaveTrack",
+      IoEvent::ToggleSaveAlbum(_) => "ToggleSaveAlbum",
+      IoEvent::ToggleFollowArtist(_) => "ToggleFollowArtist",
+      IoEvent::ToggleShuffle => "ToggleShuffle",
+      IoEvent::CycleRepeat => "CycleRepeat",
+      IoEvent::UnfollowPlaylist(_) => "UnfollowPlaylist",
+      IoEvent::GetSavedShows => "GetSavedShows",
+      IoEvent::GetShowEpisodes { .. } => "GetShowEpisodes",
+      IoEvent::GetQueue => "GetQueue",
+      IoEvent::AddToQueue(_) => "AddToQueue",
+      IoEvent::PlayUri(_) => "PlayUri",
+      IoEvent::PausePlayback => "PausePlayback",
+      IoEvent::ResumePlayback => "ResumePlayback",
+      IoEvent::NextTrack => "NextTrack",
+      IoEvent::PreviousTrack => "PreviousTrack",
+      IoEvent::ChangeVolume(_) => "ChangeVolume",
+      IoEvent::Seek(_) => "Seek",
+      IoEvent::PlayTrackInContext { .. } => "PlayTrackInContext",
+      IoEvent::PlayTrackUris { .. } => "PlayTrackUris",
+      IoEvent::Shutdown => "Shutdown",
+    }
+  }
+}
+
 pub struct Network {
   spotify: AuthCodeSpotify,
   state: Arc<Mutex<AppState>>,
@@ -100,6 +144,7 @@ impl Network {
   }
 
   pub async fn run(self, mut rx: mpsc::Receiver<IoEvent>) {
+    let mut backoff = PollBackoff::default();
     while let Some(event) = rx.recv().await {
       // Shutdown is a sentinel, not work. Breaking here is what lets the task
       // finish: dispatching it returns Ok and the loop would go straight back
@@ -114,10 +159,36 @@ impl Network {
       if let Some(flag) = self.pending.flag_for(&event) {
         flag.release();
       }
-      let name = format!("{event:?}");
-      if let Err(err) = self.dispatch(event).await {
-        warn!(%name, ?err, "network event failed");
-        self.set_error(format!("{name}: {err:#}"));
+      let name = event.name();
+      let is_poll = matches!(event, IoEvent::GetCurrentPlayback);
+      // Suspended polls are dropped, not deferred: the UI sends a fresh one
+      // every tick, so the first tick after the window does the retry.
+      if is_poll && !backoff.allows_poll(Instant::now()) {
+        continue;
+      }
+      match self.dispatch(event).await {
+        Ok(()) => {
+          if is_poll {
+            backoff.on_success();
+          }
+        }
+        Err(err) => {
+          warn!(%name, ?err, "network event failed");
+          let failure = Failure::classify(&err);
+          // A failed poll always backs off. Other requests only do on a 429,
+          // which applies to the whole app; their other failures are the
+          // user's to see and retry.
+          if is_poll || matches!(failure, Failure::RateLimited { .. }) {
+            let detail = format!("{err:#}");
+            if let Some(notice) = backoff.on_failure(&failure, &detail, Instant::now()) {
+              self.set_error(notice);
+            } else {
+              self.set_loading(false);
+            }
+          } else {
+            self.set_error(format!("{name}: {err:#}"));
+          }
+        }
       }
     }
   }
