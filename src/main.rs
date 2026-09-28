@@ -125,7 +125,10 @@ async fn main() -> Result<()> {
   // task dying) prints on a normal terminal rather than inside the alt screen.
   ratatui::restore();
 
-  let _ = io_tx.send(IoEvent::Shutdown).await;
+  // `try_send`: an awaiting send on a full channel would hang quit before the
+  // grace timeout below ever started. A missed sentinel is covered by closing
+  // the channel and then by the timeout.
+  let _ = io_tx.try_send(IoEvent::Shutdown);
   // Drop our sender so the channel closes even if the sentinel was missed
   // (a full channel, or a task that already exited). Without this, `recv()`
   // in the network task blocks forever and the await below never returns.
