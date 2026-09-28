@@ -974,29 +974,30 @@ impl Network {
     let tracks_res = self.fetch_artist_tracks(artist_id, artist_name).await;
     let albums_res = self.fetch_artist_albums(artist_id).await;
 
-    let tracks_err = tracks_res.as_ref().err().map(|e| format!("{e:#}"));
-    let albums_err = albums_res.as_ref().err().map(|e| format!("{e:#}"));
-
-    {
+    let (tracks_err, albums_err) = {
       let mut s = self.state.lock().unwrap();
-      if let Ok((rows, fallback_only)) = tracks_res {
-        s.artist_view.tracks = rows;
-        // Drives the tab label. Without this the tab claims "Top tracks" while
-        // showing search results, which is what made the removed endpoint look
-        // like a bug in this app.
-        s.artist_view.tracks_are_fallback = fallback_only;
-      }
-      if let Ok(albums) = albums_res {
-        s.artist_view.albums = albums;
-      }
-    }
+      let tracks_err = match tracks_res {
+        Ok((rows, fallback_only)) => {
+          s.artist_view.tracks = rows;
+          // Drives the tab label. Without this the tab claims "Top tracks" while
+          // showing search results, which is what made the removed endpoint look
+          // like a bug in this app.
+          s.artist_view.tracks_are_fallback = fallback_only;
+          None
+        }
+        Err(e) => Some(e),
+      };
+      let albums_err = match albums_res {
+        Ok(albums) => {
+          s.artist_view.albums = albums;
+          None
+        }
+        Err(e) => Some(e),
+      };
+      (tracks_err, albums_err)
+    };
 
-    match (tracks_err, albums_err) {
-      (None, None) => Ok(()),
-      (Some(e), None) => anyhow::bail!("artist tracks: {e}"),
-      (None, Some(e)) => anyhow::bail!("artist albums: {e}"),
-      (Some(t), Some(a)) => anyhow::bail!("artist tracks: {t}; albums: {a}"),
-    }
+    artist_view_result(tracks_err, albums_err)
   }
 
   async fn search(&self, query: &str) -> Result<()> {
@@ -1748,6 +1749,29 @@ async fn render_cover(url: &str, cols: u16, rows: u16) -> Result<CoverArt> {
   Ok(CoverArt { cols, rows, cells })
 }
 
+/// Combines the two halves of the artist view into one result. The source
+/// errors are kept as the chain rather than flattened into a string, so
+/// `Failure::classify` still sees a 429 and opens the rate-limit window. When
+/// both fail, the rate-limited one wins for the same reason.
+fn artist_view_result(
+  tracks_err: Option<anyhow::Error>,
+  albums_err: Option<anyhow::Error>,
+) -> Result<()> {
+  match (tracks_err, albums_err) {
+    (None, None) => Ok(()),
+    (Some(t), None) => Err(t.context("artist tracks")),
+    (None, Some(a)) => Err(a.context("artist albums")),
+    (Some(t), Some(a)) => {
+      let a_limited = matches!(Failure::classify(&a), Failure::RateLimited { .. });
+      if a_limited {
+        Err(a.context(format!("artist albums (tracks also failed: {t:#})")))
+      } else {
+        Err(t.context(format!("artist tracks (albums also failed: {a:#})")))
+      }
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1792,6 +1816,34 @@ mod tests {
 
   fn limited() -> Result<()> {
     Err(backoff::status_error(429, Some("30")))
+  }
+
+  #[test]
+  fn artist_view_errors_keep_the_429_for_classify() {
+    let limited = || backoff::status_error(429, Some("30"));
+    let other = || backoff::status_error(500, None);
+    let is_limited = |r: Result<()>| {
+      matches!(
+        Failure::classify(&r.unwrap_err()),
+        Failure::RateLimited { .. }
+      )
+    };
+
+    assert!(artist_view_result(None, None).is_ok());
+    assert!(is_limited(artist_view_result(Some(limited()), None)));
+    assert!(is_limited(artist_view_result(None, Some(limited()))));
+    assert!(is_limited(artist_view_result(
+      Some(other()),
+      Some(limited())
+    )));
+    assert!(is_limited(artist_view_result(
+      Some(limited()),
+      Some(other())
+    )));
+    assert!(!is_limited(artist_view_result(
+      Some(other()),
+      Some(other())
+    )));
   }
 
   fn ok() -> Result<()> {
