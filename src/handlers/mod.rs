@@ -23,20 +23,31 @@ use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::warn;
 
 /// Queue `event` for the network task from the UI path. Never waits.
+/// Returns whether it was queued.
 ///
 /// Every handler runs on the UI loop, and Repeat events reach handlers, so an
 /// awaiting send would freeze drawing and key handling as soon as a stalled
 /// network task let the channel fill. A full channel drops the event and
-/// says so instead. A closed channel is ignored: the main loop notices the
-/// network task has ended and exits with its error.
+/// says so instead. A closed channel is not reported: the main loop notices
+/// the network task has ended and exits with its error.
+///
+/// Callers that change the view in anticipation of the response (open a
+/// pane, switch to results) must only do so when this returns true, or the
+/// new pane shows the previous list as if it were the answer.
 ///
 /// Must not be called while holding the state lock — the full path takes it.
-pub(crate) fn send_io(state: &Mutex<AppState>, io_tx: &mpsc::Sender<IoEvent>, event: IoEvent) {
+pub(crate) fn send_io(
+  state: &Mutex<AppState>,
+  io_tx: &mpsc::Sender<IoEvent>,
+  event: IoEvent,
+) -> bool {
   match io_tx.try_send(event) {
-    Ok(()) | Err(TrySendError::Closed(_)) => {}
+    Ok(()) => true,
+    Err(TrySendError::Closed(_)) => false,
     Err(TrySendError::Full(event)) => {
       warn!(name = event.name(), "network channel full, dropping action");
       lock(state).note_dropped_action();
+      false
     }
   }
 }
@@ -132,13 +143,15 @@ pub async fn handle_key(
     return KeyOutcome::Continue;
   }
   if keys.device.matches(&key) {
-    send_io(state, io_tx, IoEvent::GetDevices);
-    lock(state).push_block(ActiveBlock::SelectDevice);
+    if send_io(state, io_tx, IoEvent::GetDevices) {
+      lock(state).push_block(ActiveBlock::SelectDevice);
+    }
     return KeyOutcome::Continue;
   }
   if keys.queue.matches(&key) {
-    send_io(state, io_tx, IoEvent::GetQueue);
-    lock(state).push_block(ActiveBlock::Queue);
+    if send_io(state, io_tx, IoEvent::GetQueue) {
+      lock(state).push_block(ActiveBlock::Queue);
+    }
     return KeyOutcome::Continue;
   }
   if keys.play_pause.matches(&key) {
@@ -412,6 +425,47 @@ mod tests {
       rx.try_recv().is_err(),
       "dropped events are not queued later"
     );
+  }
+
+  /// A dropped fetch must not open its pane: the new view would show the
+  /// previous list as if it were the answer.
+  #[tokio::test]
+  async fn dropped_fetch_does_not_navigate() {
+    let state = test_state();
+    state.lock().unwrap().active_block = ActiveBlock::Library;
+    let (tx, mut rx) = mpsc::channel::<IoEvent>(1);
+    tx.try_send(IoEvent::GetQueue).unwrap();
+
+    handle_key(press('l'), &state, &tx).await;
+    assert_eq!(state.lock().unwrap().active_block, ActiveBlock::Library);
+
+    // With room in the channel the same key opens the pane.
+    rx.try_recv().unwrap();
+    handle_key(press('l'), &state, &tx).await;
+    assert_eq!(state.lock().unwrap().active_block, ActiveBlock::TrackTable);
+    assert!(matches!(rx.try_recv(), Ok(IoEvent::GetSavedTracks)));
+  }
+
+  /// A dropped search leaves the input open with the query, so Enter retries.
+  #[tokio::test]
+  async fn dropped_search_keeps_the_input_open() {
+    let state = test_state();
+    {
+      let mut s = state.lock().unwrap();
+      s.push_block(ActiveBlock::SearchInput);
+      s.search_query = "abba".to_string();
+    }
+    let (tx, _rx) = mpsc::channel::<IoEvent>(1);
+    tx.try_send(IoEvent::GetQueue).unwrap();
+    let enter = KeyEvent {
+      code: KeyCode::Enter,
+      ..press('x')
+    };
+
+    handle_key(enter, &state, &tx).await;
+    let s = state.lock().unwrap();
+    assert_eq!(s.active_block, ActiveBlock::SearchInput);
+    assert_eq!(s.search_query, "abba");
   }
 
   /// Holding a key during a stall repeats the drop many times a second; the

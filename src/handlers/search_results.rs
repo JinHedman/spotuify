@@ -77,7 +77,7 @@ pub(super) async fn handle(
         );
       }
       Some(PickEvent::OpenAlbum(id, name)) => {
-        super::send_io(
+        let sent = super::send_io(
           state,
           io_tx,
           IoEvent::GetAlbumTracks {
@@ -85,10 +85,12 @@ pub(super) async fn handle(
             album_name: name,
           },
         );
-        lock(state).push_block(ActiveBlock::TrackTable);
+        if sent {
+          lock(state).push_block(ActiveBlock::TrackTable);
+        }
       }
       Some(PickEvent::OpenArtist(id, name)) => {
-        super::send_io(
+        let sent = super::send_io(
           state,
           io_tx,
           IoEvent::OpenArtist {
@@ -96,7 +98,9 @@ pub(super) async fn handle(
             artist_name: name,
           },
         );
-        lock(state).push_block(ActiveBlock::ArtistView);
+        if sent {
+          lock(state).push_block(ActiveBlock::ArtistView);
+        }
       }
       None => {}
     }

@@ -38,7 +38,7 @@ pub(super) async fn handle(
         .map(|sa| (sa.album.id.id().to_string(), sa.album.name.clone()))
     };
     if let Some((album_id, album_name)) = info {
-      super::send_io(
+      let sent = super::send_io(
         state,
         io_tx,
         IoEvent::GetAlbumTracks {
@@ -46,7 +46,9 @@ pub(super) async fn handle(
           album_name,
         },
       );
-      lock(state).push_block(ActiveBlock::TrackTable);
+      if sent {
+        lock(state).push_block(ActiveBlock::TrackTable);
+      }
     }
   }
 }

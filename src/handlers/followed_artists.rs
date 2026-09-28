@@ -39,7 +39,7 @@ pub(super) async fn handle(
         .map(|a| (a.id.id().to_string(), a.name.clone()))
     };
     if let Some((artist_id, artist_name)) = info {
-      super::send_io(
+      let sent = super::send_io(
         state,
         io_tx,
         IoEvent::OpenArtist {
@@ -47,7 +47,9 @@ pub(super) async fn handle(
           artist_name,
         },
       );
-      lock(state).push_block(ActiveBlock::ArtistView);
+      if sent {
+        lock(state).push_block(ActiveBlock::ArtistView);
+      }
     }
   }
 }

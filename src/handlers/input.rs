@@ -19,10 +19,13 @@ pub(super) async fn handle(
     KeyCode::Enter => {
       let query = lock(state).search_query.trim().to_string();
       if !query.is_empty() {
-        super::send_io(state, io_tx, IoEvent::Search(query));
-        let mut s = lock(state);
-        s.active_block = ActiveBlock::SearchResults;
-        s.block_history.clear();
+        // On a drop the input stays open with the query intact, so Enter
+        // retries it.
+        if super::send_io(state, io_tx, IoEvent::Search(query)) {
+          let mut s = lock(state);
+          s.active_block = ActiveBlock::SearchResults;
+          s.block_history.clear();
+        }
       }
     }
     KeyCode::Backspace => {

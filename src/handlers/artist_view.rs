@@ -104,7 +104,7 @@ pub(super) async fn handle(
         );
       }
       Some(Action::OpenAlbum(id, name)) => {
-        super::send_io(
+        let sent = super::send_io(
           state,
           io_tx,
           IoEvent::GetAlbumTracks {
@@ -112,7 +112,9 @@ pub(super) async fn handle(
             album_name: name,
           },
         );
-        lock(state).push_block(ActiveBlock::TrackTable);
+        if sent {
+          lock(state).push_block(ActiveBlock::TrackTable);
+        }
       }
       None => {}
     }

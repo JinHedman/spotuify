@@ -27,24 +27,29 @@ pub(super) async fn handle(
     // change without silently breaking navigation.
     match LIBRARY_ENTRIES.get(idx).map(|e| e.name) {
       Some("Liked Songs") => {
-        super::send_io(state, io_tx, IoEvent::GetSavedTracks);
-        lock(state).push_block(ActiveBlock::TrackTable);
+        if super::send_io(state, io_tx, IoEvent::GetSavedTracks) {
+          lock(state).push_block(ActiveBlock::TrackTable);
+        }
       }
       Some("Albums") => {
-        super::send_io(state, io_tx, IoEvent::GetSavedAlbums);
-        lock(state).push_block(ActiveBlock::SavedAlbums);
+        if super::send_io(state, io_tx, IoEvent::GetSavedAlbums) {
+          lock(state).push_block(ActiveBlock::SavedAlbums);
+        }
       }
       Some("Artists") => {
-        super::send_io(state, io_tx, IoEvent::GetFollowedArtists);
-        lock(state).push_block(ActiveBlock::FollowedArtists);
+        if super::send_io(state, io_tx, IoEvent::GetFollowedArtists) {
+          lock(state).push_block(ActiveBlock::FollowedArtists);
+        }
       }
       Some("Recently Played") => {
-        super::send_io(state, io_tx, IoEvent::GetRecentlyPlayed);
-        lock(state).push_block(ActiveBlock::TrackTable);
+        if super::send_io(state, io_tx, IoEvent::GetRecentlyPlayed) {
+          lock(state).push_block(ActiveBlock::TrackTable);
+        }
       }
       Some("Podcasts") => {
-        super::send_io(state, io_tx, IoEvent::GetSavedShows);
-        lock(state).push_block(ActiveBlock::SavedShows);
+        if super::send_io(state, io_tx, IoEvent::GetSavedShows) {
+          lock(state).push_block(ActiveBlock::SavedShows);
+        }
       }
       _ => {}
     }

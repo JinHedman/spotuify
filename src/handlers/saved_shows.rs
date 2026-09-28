@@ -38,12 +38,14 @@ pub(super) async fn handle(
         .map(|sh| (sh.show.id.id().to_string(), sh.show.name.clone()))
     };
     if let Some((show_id, show_name)) = info {
-      super::send_io(
+      let sent = super::send_io(
         state,
         io_tx,
         IoEvent::GetShowEpisodes { show_id, show_name },
       );
-      lock(state).push_block(ActiveBlock::ShowEpisodes);
+      if sent {
+        lock(state).push_block(ActiveBlock::ShowEpisodes);
+      }
     }
   }
 }

@@ -38,8 +38,10 @@ pub(super) async fn handle(
       s.devices.get(s.devices_index).and_then(|d| d.id.clone())
     };
     if let Some(id) = device_id {
-      super::send_io(state, io_tx, IoEvent::TransferPlayback(id));
-      lock(state).pop_block();
+      // Stays open on a drop so the user can pick again.
+      if super::send_io(state, io_tx, IoEvent::TransferPlayback(id)) {
+        lock(state).pop_block();
+      }
     }
   }
 }

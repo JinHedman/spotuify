@@ -57,7 +57,7 @@ pub(super) async fn handle(
         .map(|p| (p.id.id().to_string(), p.name.clone()))
     };
     if let Some((playlist_id, playlist_name)) = info {
-      super::send_io(
+      let sent = super::send_io(
         state,
         io_tx,
         IoEvent::GetPlaylistTracks {
@@ -65,7 +65,9 @@ pub(super) async fn handle(
           playlist_name,
         },
       );
-      lock(state).active_block = ActiveBlock::TrackTable;
+      if sent {
+        lock(state).active_block = ActiveBlock::TrackTable;
+      }
     }
   }
 }
