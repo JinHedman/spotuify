@@ -133,22 +133,53 @@ async fn main() -> Result<()> {
   // (a full channel, or a task that already exited). Without this, `recv()`
   // in the network task blocks forever and the await below never returns.
   drop(io_tx);
-  // Bounded: a cover render can be mid-ffmpeg when we quit, and waiting on it
-  // would stall the exit by up to COVER_TIMEOUT. Nothing in the network task
-  // holds unsaved state — cache writes are atomic via rename — so abandoning
-  // it is safe, and a prompt exit matters more than a tidy join.
-  //
-  // Skipped when the task has already ended: `run` may have consumed its
-  // output, and there is nothing left to wait for.
-  if !network_handle.is_finished()
-    && tokio::time::timeout(SHUTDOWN_GRACE, network_handle)
-      .await
-      .is_err()
-  {
-    tracing::warn!("network task did not stop within {SHUTDOWN_GRACE:?}");
-  }
+  let poisoned = matches!(&result, Err(e) if e.is::<StatePoisoned>());
+  // Only errs when poisoned, and then its error (how the task ended) is the
+  // one worth printing, so it takes precedence over `result`.
+  let exit = finish_network(network_handle, poisoned).await;
+  exit.and(result)
+}
 
-  result
+/// Returned by `run` when the shared state is poisoned. `main` replaces it
+/// with how the network task ended, which explains why.
+#[derive(Debug)]
+struct StatePoisoned;
+
+impl std::fmt::Display for StatePoisoned {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str("network task failed and left shared state unusable")
+  }
+}
+
+impl std::error::Error for StatePoisoned {}
+
+/// Wait for the network task to stop, at most `SHUTDOWN_GRACE` in total.
+/// This is the only wait on the handle, so exit cannot take longer.
+///
+/// Bounded: a cover render can be mid-ffmpeg when we quit, and waiting on it
+/// would stall the exit by up to COVER_TIMEOUT. Nothing in the network task
+/// holds unsaved state — cache writes are atomic via rename — so abandoning
+/// it is safe, and a prompt exit matters more than a tidy join.
+///
+/// `poisoned`: the task is known to have failed, so its exit is returned as
+/// the error. Otherwise a finished task is skipped, since `run` may already
+/// have consumed its output and polling a spent `JoinHandle` panics.
+async fn finish_network(handle: JoinHandle<()>, poisoned: bool) -> Result<()> {
+  if !poisoned && handle.is_finished() {
+    return Ok(());
+  }
+  match time::timeout(SHUTDOWN_GRACE, handle).await {
+    Ok(res) if poisoned => Err(network_exit_error(res)),
+    Ok(_) => Ok(()),
+    Err(_) => {
+      warn!("network task did not stop within {SHUTDOWN_GRACE:?}");
+      if poisoned {
+        Err(StatePoisoned.into())
+      } else {
+        Ok(())
+      }
+    }
+  }
 }
 
 async fn run(
@@ -170,12 +201,11 @@ async fn run(
     // here and report the task's exit, which explains why. A panic that lands
     // mid-iteration is survived by `app::lock`, which recovers the guard, so
     // the handler finishes and this check catches it on the next pass.
+    //
+    // Not awaited here: main does the one bounded wait on the handle, so
+    // exit takes at most SHUTDOWN_GRACE.
     if state.is_poisoned() {
-      let exit = time::timeout(SHUTDOWN_GRACE, &mut *network).await;
-      return Err(match exit {
-        Ok(res) => network_exit_error(res),
-        Err(_) => anyhow::anyhow!("network task failed and left shared state unusable"),
-      });
+      return Err(StatePoisoned.into());
     }
 
     terminal.draw(|f| ui::draw(f, &state))?;
@@ -254,6 +284,27 @@ mod tests {
     let res = tokio::spawn(async { panic!("boom") }).await;
     let msg = network_exit_error(res).to_string();
     assert_eq!(msg, "network task panicked: boom");
+  }
+
+  /// The poison path used to wait a full grace in `run` and then another in
+  /// `main` on the same handle. A task that never stops must be abandoned
+  /// after one.
+  #[tokio::test]
+  async fn poisoned_exit_waits_one_grace_at_most() {
+    let stuck = tokio::spawn(std::future::pending::<()>());
+    let started = std::time::Instant::now();
+    let err = finish_network(stuck, true).await.unwrap_err();
+    let waited = started.elapsed();
+    assert!(err.is::<StatePoisoned>());
+    assert!(waited >= SHUTDOWN_GRACE);
+    assert!(waited < SHUTDOWN_GRACE * 2, "waited {waited:?}");
+  }
+
+  #[tokio::test]
+  async fn poisoned_exit_reports_how_the_task_ended() {
+    let crashed = tokio::spawn(async { panic!("boom") });
+    let err = finish_network(crashed, true).await.unwrap_err();
+    assert_eq!(err.to_string(), "network task panicked: boom");
   }
 
   #[tokio::test]
