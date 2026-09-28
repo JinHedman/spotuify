@@ -29,7 +29,7 @@ pub(super) async fn handle(
     return;
   }
   if keys.refresh.matches(&key) {
-    let _ = io_tx.send(IoEvent::GetDevices).await;
+    super::send_io(state, io_tx, IoEvent::GetDevices);
     return;
   }
   if keys.activate.matches(&key) {
@@ -38,7 +38,7 @@ pub(super) async fn handle(
       s.devices.get(s.devices_index).and_then(|d| d.id.clone())
     };
     if let Some(id) = device_id {
-      let _ = io_tx.send(IoEvent::TransferPlayback(id)).await;
+      super::send_io(state, io_tx, IoEvent::TransferPlayback(id));
       state.lock().unwrap().pop_block();
     }
   }

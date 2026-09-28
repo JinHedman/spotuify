@@ -19,7 +19,7 @@ pub(super) async fn handle(
     KeyCode::Enter => {
       let query = state.lock().unwrap().search_query.trim().to_string();
       if !query.is_empty() {
-        let _ = io_tx.send(IoEvent::Search(query)).await;
+        super::send_io(state, io_tx, IoEvent::Search(query));
         let mut s = state.lock().unwrap();
         s.active_block = ActiveBlock::SearchResults;
         s.block_history.clear();

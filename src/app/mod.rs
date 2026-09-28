@@ -299,6 +299,9 @@ pub struct AppState {
   /// Dedupe flags for coalesced `IoEvent`s, shared with the network task.
   /// Lives here so any handler can reach it without a new parameter.
   pub pending_io: Arc<PendingIo>,
+  /// When the "action dropped" notice was last posted, so holding a key
+  /// during a stall shows it once rather than on every repeat.
+  pub dropped_notice_at: Option<Instant>,
 
   pub active_block: ActiveBlock,
   pub block_history: Vec<ActiveBlock>,
@@ -406,6 +409,7 @@ impl AppState {
       last_error: None,
       is_loading: false,
       pending_io: Arc::new(PendingIo::default()),
+      dropped_notice_at: None,
       active_block: ActiveBlock::Library,
       block_history: Vec::new(),
       library_index: 0,
@@ -712,6 +716,21 @@ impl AppState {
       at: Instant::now(),
     });
   }
+
+  /// Report that a user action was dropped because the network channel was
+  /// full. Posted at most once per `NOTICE_TTL`.
+  pub fn note_dropped_action(&mut self) {
+    if self
+      .dropped_notice_at
+      .is_some_and(|at| at.elapsed() < Self::NOTICE_TTL)
+    {
+      return;
+    }
+    self.dropped_notice_at = Some(Instant::now());
+    self.set_notice(Self::DROPPED_NOTICE);
+  }
+
+  pub const DROPPED_NOTICE: &'static str = "Spotify is slow to respond, action dropped";
 
   /// The current message, if one is set and still within its lifetime.
   ///

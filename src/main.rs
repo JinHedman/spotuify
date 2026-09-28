@@ -157,7 +157,7 @@ async fn run(
 ) -> Result<()> {
   let pending = state.lock().unwrap().pending_io.clone();
   pending.send(&io_tx, IoEvent::GetCurrentPlayback);
-  let _ = io_tx.send(IoEvent::GetPlaylists).await;
+  handlers::send_io(&state, &io_tx, IoEvent::GetPlaylists);
 
   let mut events = EventStream::new();
   let mut poll = time::interval(Duration::from_millis(user_cfg.behavior.poll_interval_ms));

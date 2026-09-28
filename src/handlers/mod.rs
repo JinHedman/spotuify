@@ -19,7 +19,27 @@ use crate::config::keys::KeyBindings;
 use crate::config::user::UserConfig;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, error::TrySendError};
+use tracing::warn;
+
+/// Queue `event` for the network task from the UI path. Never waits.
+///
+/// Every handler runs on the UI loop, and Repeat events reach handlers, so an
+/// awaiting send would freeze drawing and key handling as soon as a stalled
+/// network task let the channel fill. A full channel drops the event and
+/// says so instead. A closed channel is ignored: the main loop notices the
+/// network task has ended and exits with its error.
+///
+/// Must not be called while holding the state lock — the full path takes it.
+pub(crate) fn send_io(state: &Mutex<AppState>, io_tx: &mpsc::Sender<IoEvent>, event: IoEvent) {
+  match io_tx.try_send(event) {
+    Ok(()) | Err(TrySendError::Closed(_)) => {}
+    Err(TrySendError::Full(event)) => {
+      warn!(name = event.name(), "network channel full, dropping action");
+      state.lock().unwrap().note_dropped_action();
+    }
+  }
+}
 
 pub enum KeyOutcome {
   Continue,
@@ -112,12 +132,12 @@ pub async fn handle_key(
     return KeyOutcome::Continue;
   }
   if keys.device.matches(&key) {
-    let _ = io_tx.send(IoEvent::GetDevices).await;
+    send_io(state, io_tx, IoEvent::GetDevices);
     state.lock().unwrap().push_block(ActiveBlock::SelectDevice);
     return KeyOutcome::Continue;
   }
   if keys.queue.matches(&key) {
-    let _ = io_tx.send(IoEvent::GetQueue).await;
+    send_io(state, io_tx, IoEvent::GetQueue);
     state.lock().unwrap().push_block(ActiveBlock::Queue);
     return KeyOutcome::Continue;
   }
@@ -128,57 +148,59 @@ pub async fn handle_key(
     } else {
       IoEvent::ResumePlayback
     };
-    let _ = io_tx.send(ev).await;
+    send_io(state, io_tx, ev);
     return KeyOutcome::Continue;
   }
   if keys.next_track.matches(&key) {
-    let _ = io_tx.send(IoEvent::NextTrack).await;
+    send_io(state, io_tx, IoEvent::NextTrack);
     return KeyOutcome::Continue;
   }
   if keys.previous_track.matches(&key) {
-    let _ = io_tx.send(IoEvent::PreviousTrack).await;
+    send_io(state, io_tx, IoEvent::PreviousTrack);
     return KeyOutcome::Continue;
   }
   if keys.volume_up.matches(&key) {
     let v = state.lock().unwrap().current_volume();
-    let _ = io_tx
-      .send(IoEvent::ChangeVolume(
-        v.saturating_add(behavior.volume_step).min(100),
-      ))
-      .await;
+    send_io(
+      state,
+      io_tx,
+      IoEvent::ChangeVolume(v.saturating_add(behavior.volume_step).min(100)),
+    );
     return KeyOutcome::Continue;
   }
   if keys.volume_down.matches(&key) {
     let v = state.lock().unwrap().current_volume();
-    let _ = io_tx
-      .send(IoEvent::ChangeVolume(
-        v.saturating_sub(behavior.volume_step),
-      ))
-      .await;
+    send_io(
+      state,
+      io_tx,
+      IoEvent::ChangeVolume(v.saturating_sub(behavior.volume_step)),
+    );
     return KeyOutcome::Continue;
   }
   if keys.seek_backward.matches(&key) {
     let progress = state.lock().unwrap().current_progress_ms();
     if let Some(p) = progress {
-      let _ = io_tx
-        .send(IoEvent::Seek((p - behavior.seek_step_ms).max(0)))
-        .await;
+      send_io(
+        state,
+        io_tx,
+        IoEvent::Seek((p - behavior.seek_step_ms).max(0)),
+      );
     }
     return KeyOutcome::Continue;
   }
   if keys.seek_forward.matches(&key) {
     let progress = state.lock().unwrap().current_progress_ms();
     if let Some(p) = progress {
-      let _ = io_tx.send(IoEvent::Seek(p + behavior.seek_step_ms)).await;
+      send_io(state, io_tx, IoEvent::Seek(p + behavior.seek_step_ms));
     }
     return KeyOutcome::Continue;
   }
   if keys.shuffle.matches(&key) {
-    let _ = io_tx.send(IoEvent::ToggleShuffle).await;
+    send_io(state, io_tx, IoEvent::ToggleShuffle);
     return KeyOutcome::Continue;
   }
   if keys.repeat.matches(&key) {
-    let _ = io_tx.send(IoEvent::CycleRepeat).await;
+    send_io(state, io_tx, IoEvent::CycleRepeat);
     return KeyOutcome::Continue;
   }
   if keys.refresh.matches(&key) {
@@ -189,21 +211,21 @@ pub async fn handle_key(
   if keys.save_track.matches(&key) {
     let track_id = state.lock().unwrap().current_track_id();
     if let Some(id) = track_id {
-      let _ = io_tx.send(IoEvent::ToggleSaveTrack(id)).await;
+      send_io(state, io_tx, IoEvent::ToggleSaveTrack(id));
     }
     return KeyOutcome::Continue;
   }
   if keys.save_album.matches(&key) {
     let album_id = state.lock().unwrap().current_album_id();
     if let Some(id) = album_id {
-      let _ = io_tx.send(IoEvent::ToggleSaveAlbum(id)).await;
+      send_io(state, io_tx, IoEvent::ToggleSaveAlbum(id));
     }
     return KeyOutcome::Continue;
   }
   if keys.follow_artist.matches(&key) {
     let artist_id = state.lock().unwrap().current_artist_id();
     if let Some(id) = artist_id {
-      let _ = io_tx.send(IoEvent::ToggleFollowArtist(id)).await;
+      send_io(state, io_tx, IoEvent::ToggleFollowArtist(id));
     }
     return KeyOutcome::Continue;
   }
@@ -366,5 +388,54 @@ mod tests {
       "no IoEvent should be dispatched while the overlay is open"
     );
     assert!(state.lock().unwrap().help_visible, "overlay stays open");
+  }
+
+  /// A stalled network task fills the channel. Handlers must drop the event
+  /// and return rather than wait for capacity — an awaiting send here would
+  /// never complete and this test would hang.
+  #[tokio::test]
+  async fn full_channel_drops_the_action_without_blocking() {
+    let state = test_state();
+    let (tx, mut rx) = mpsc::channel::<IoEvent>(1);
+    tx.try_send(IoEvent::GetQueue).unwrap();
+
+    for _ in 0..3 {
+      handle_key(press('n'), &state, &tx).await;
+    }
+
+    assert_eq!(
+      state.lock().unwrap().notice(),
+      Some(AppState::DROPPED_NOTICE)
+    );
+    assert!(matches!(rx.try_recv(), Ok(IoEvent::GetQueue)));
+    assert!(
+      rx.try_recv().is_err(),
+      "dropped events are not queued later"
+    );
+  }
+
+  /// Holding a key during a stall repeats the drop many times a second; the
+  /// notice is posted once per NOTICE_TTL rather than on every repeat.
+  #[test]
+  fn dropped_notice_is_rate_limited() {
+    let state = test_state();
+    let (tx, _rx) = mpsc::channel::<IoEvent>(1);
+    tx.try_send(IoEvent::GetQueue).unwrap();
+
+    send_io(&state, &tx, IoEvent::NextTrack);
+    let first = state.lock().unwrap().dropped_notice_at;
+    assert!(first.is_some());
+    state.lock().unwrap().set_notice("something else");
+    send_io(&state, &tx, IoEvent::NextTrack);
+    assert_eq!(state.lock().unwrap().dropped_notice_at, first);
+    assert_eq!(state.lock().unwrap().notice(), Some("something else"));
+
+    // Once the window has passed it is posted again.
+    state.lock().unwrap().dropped_notice_at = first.map(|t| t - AppState::NOTICE_TTL);
+    send_io(&state, &tx, IoEvent::NextTrack);
+    assert_eq!(
+      state.lock().unwrap().notice(),
+      Some(AppState::DROPPED_NOTICE)
+    );
   }
 }

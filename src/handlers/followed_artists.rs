@@ -39,12 +39,14 @@ pub(super) async fn handle(
         .map(|a| (a.id.id().to_string(), a.name.clone()))
     };
     if let Some((artist_id, artist_name)) = info {
-      let _ = io_tx
-        .send(IoEvent::OpenArtist {
+      super::send_io(
+        state,
+        io_tx,
+        IoEvent::OpenArtist {
           artist_id,
           artist_name,
-        })
-        .await;
+        },
+      );
       state.lock().unwrap().push_block(ActiveBlock::ArtistView);
     }
   }

@@ -35,7 +35,7 @@ pub(super) async fn handle(
       action
     };
     if let Some(DialogAction::UnfollowPlaylist { playlist_id }) = action {
-      let _ = io_tx.send(IoEvent::UnfollowPlaylist(playlist_id)).await;
+      super::send_io(state, io_tx, IoEvent::UnfollowPlaylist(playlist_id));
     }
   }
 }

@@ -38,12 +38,14 @@ pub(super) async fn handle(
         .map(|sa| (sa.album.id.id().to_string(), sa.album.name.clone()))
     };
     if let Some((album_id, album_name)) = info {
-      let _ = io_tx
-        .send(IoEvent::GetAlbumTracks {
+      super::send_io(
+        state,
+        io_tx,
+        IoEvent::GetAlbumTracks {
           album_id,
           album_name,
-        })
-        .await;
+        },
+      );
       state.lock().unwrap().push_block(ActiveBlock::TrackTable);
     }
   }

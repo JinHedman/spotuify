@@ -56,7 +56,7 @@ pub(super) async fn handle(
       }
     };
     if let Some(uri) = uri {
-      let _ = io_tx.send(IoEvent::AddToQueue(uri)).await;
+      super::send_io(state, io_tx, IoEvent::AddToQueue(uri));
     }
     return;
   }
@@ -67,29 +67,35 @@ pub(super) async fn handle(
     };
     match ev {
       Some(PickEvent::PlaySingleTrack(_uri, uris, idx)) => {
-        let _ = io_tx
-          .send(IoEvent::PlayTrackUris {
+        super::send_io(
+          state,
+          io_tx,
+          IoEvent::PlayTrackUris {
             uris,
             offset_index: idx,
-          })
-          .await;
+          },
+        );
       }
       Some(PickEvent::OpenAlbum(id, name)) => {
-        let _ = io_tx
-          .send(IoEvent::GetAlbumTracks {
+        super::send_io(
+          state,
+          io_tx,
+          IoEvent::GetAlbumTracks {
             album_id: id,
             album_name: name,
-          })
-          .await;
+          },
+        );
         state.lock().unwrap().push_block(ActiveBlock::TrackTable);
       }
       Some(PickEvent::OpenArtist(id, name)) => {
-        let _ = io_tx
-          .send(IoEvent::OpenArtist {
+        super::send_io(
+          state,
+          io_tx,
+          IoEvent::OpenArtist {
             artist_id: id,
             artist_name: name,
-          })
-          .await;
+          },
+        );
         state.lock().unwrap().push_block(ActiveBlock::ArtistView);
       }
       None => {}

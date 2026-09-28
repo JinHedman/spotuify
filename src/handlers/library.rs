@@ -27,26 +27,26 @@ pub(super) async fn handle(
     // change without silently breaking navigation.
     match LIBRARY_ENTRIES.get(idx).map(|e| e.name) {
       Some("Liked Songs") => {
-        let _ = io_tx.send(IoEvent::GetSavedTracks).await;
+        super::send_io(state, io_tx, IoEvent::GetSavedTracks);
         state.lock().unwrap().push_block(ActiveBlock::TrackTable);
       }
       Some("Albums") => {
-        let _ = io_tx.send(IoEvent::GetSavedAlbums).await;
+        super::send_io(state, io_tx, IoEvent::GetSavedAlbums);
         state.lock().unwrap().push_block(ActiveBlock::SavedAlbums);
       }
       Some("Artists") => {
-        let _ = io_tx.send(IoEvent::GetFollowedArtists).await;
+        super::send_io(state, io_tx, IoEvent::GetFollowedArtists);
         state
           .lock()
           .unwrap()
           .push_block(ActiveBlock::FollowedArtists);
       }
       Some("Recently Played") => {
-        let _ = io_tx.send(IoEvent::GetRecentlyPlayed).await;
+        super::send_io(state, io_tx, IoEvent::GetRecentlyPlayed);
         state.lock().unwrap().push_block(ActiveBlock::TrackTable);
       }
       Some("Podcasts") => {
-        let _ = io_tx.send(IoEvent::GetSavedShows).await;
+        super::send_io(state, io_tx, IoEvent::GetSavedShows);
         state.lock().unwrap().push_block(ActiveBlock::SavedShows);
       }
       _ => {}

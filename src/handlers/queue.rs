@@ -38,6 +38,6 @@ pub(super) async fn handle(
     return;
   }
   if keys.refresh.matches(&key) {
-    let _ = io_tx.send(IoEvent::GetQueue).await;
+    super::send_io(state, io_tx, IoEvent::GetQueue);
   }
 }

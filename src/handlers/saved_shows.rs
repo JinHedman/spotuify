@@ -38,9 +38,11 @@ pub(super) async fn handle(
         .map(|sh| (sh.show.id.id().to_string(), sh.show.name.clone()))
     };
     if let Some((show_id, show_name)) = info {
-      let _ = io_tx
-        .send(IoEvent::GetShowEpisodes { show_id, show_name })
-        .await;
+      super::send_io(
+        state,
+        io_tx,
+        IoEvent::GetShowEpisodes { show_id, show_name },
+      );
       state.lock().unwrap().push_block(ActiveBlock::ShowEpisodes);
     }
   }

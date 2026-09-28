@@ -38,7 +38,7 @@ pub(super) async fn handle(
         .map(|e| e.id.uri())
     };
     if let Some(uri) = uri {
-      let _ = io_tx.send(IoEvent::AddToQueue(uri)).await;
+      super::send_io(state, io_tx, IoEvent::AddToQueue(uri));
     }
     return;
   }
@@ -50,7 +50,7 @@ pub(super) async fn handle(
         .map(|e| e.id.uri())
     };
     if let Some(uri) = uri {
-      let _ = io_tx.send(IoEvent::PlayUri(uri)).await;
+      super::send_io(state, io_tx, IoEvent::PlayUri(uri));
     }
   }
 }

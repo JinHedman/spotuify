@@ -48,7 +48,7 @@ pub(super) async fn handle(
         .and_then(|t| t.uri.clone())
     };
     if let Some(uri) = uri {
-      let _ = io_tx.send(IoEvent::AddToQueue(uri)).await;
+      super::send_io(state, io_tx, IoEvent::AddToQueue(uri));
     }
     return;
   }
@@ -74,7 +74,7 @@ pub(super) async fn handle(
       }
     };
     if let Some(ev) = play {
-      let _ = io_tx.send(ev).await;
+      super::send_io(state, io_tx, ev);
     }
   }
 }

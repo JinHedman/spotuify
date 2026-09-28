@@ -57,12 +57,14 @@ pub(super) async fn handle(
         .map(|p| (p.id.id().to_string(), p.name.clone()))
     };
     if let Some((playlist_id, playlist_name)) = info {
-      let _ = io_tx
-        .send(IoEvent::GetPlaylistTracks {
+      super::send_io(
+        state,
+        io_tx,
+        IoEvent::GetPlaylistTracks {
           playlist_id,
           playlist_name,
-        })
-        .await;
+        },
+      );
       state.lock().unwrap().active_block = ActiveBlock::TrackTable;
     }
   }
